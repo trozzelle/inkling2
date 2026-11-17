@@ -36,3 +36,19 @@ def test_teacher_writes_final_and_scores_itself(tmp_path):
     lp = full_logits - mx.logsumexp(full_logits, axis=-1, keepdims=True)
     nll0 = -float(mx.take_along_axis(lp[:-1], mx.array(seqs[0][1:])[:, None], -1).sum())
     assert abs(res["rows"][0]["nll_teacher"] - nll0) < 1e-3
+
+    # a perturbed variant must score worse than the teacher
+    var = tmp_path / "v"
+    var.mkdir()
+    for i in range(2):
+        f = mx.load(str(tmp_path / "t" / f"seq-{i:05d}.safetensors"))["final"]
+        noisy = f + 0.5 * mx.random.normal(f.shape, key=mx.random.key(i)).astype(f.dtype)
+        mx.save_safetensors(str(var / f"seq-{i:05d}.safetensors"), {"final": noisy})
+    res_v = evaluate.main_args([
+        "--source", str(tmp_path / "src"), "--tokens", str(tmp_path / "tok.safetensors"),
+        "--manifest", str(tmp_path / "m.json"), "--teacher", str(tmp_path / "t"), "--variant", str(var),
+        "--out", str(tmp_path / "ev.json"), "--vocab-real", "120",
+    ])
+    sv = res_v["summary"]
+    assert sv["kl"] > 1e-3 and sv["top1"] < 1.0
+    assert abs(sv["nll_teacher"] - s["nll_teacher"]) < 1e-6
