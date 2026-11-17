@@ -9,6 +9,7 @@ import time
 import mlx.core as mx
 import numpy as np
 
+from ink2q.memguard import Floor, apply_limits
 from ink2q.vq.kernel import VQWeights, dequant, gather_gemv, stage2_table
 
 E, S = 64, 8                                           # experts resident in the bench, slots per token
@@ -41,19 +42,29 @@ def vq_weights(rng, N, K) -> VQWeights:
     )
 
 
+def affine3_weights(rng, N, K):
+    """Random packed affine 3-bit g128 weights: timing does not depend on values, so no float tensor or quantize."""
+    wq = mx.array(rng.integers(0, 2**32, size=(E, N, K * 3 // 32), dtype=np.uint32))
+    sc = mx.array((rng.random((E, N, K // 128)) * 0.01).astype(np.float32)).astype(mx.bfloat16)
+    bi = mx.array((rng.random((E, N, K // 128)) * 0.01).astype(np.float32)).astype(mx.bfloat16)
+    return wq, sc, bi
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
+    apply_limits(16, 2)
+    floor = Floor(24)
+    floor.check("g0 start")
     rng = np.random.default_rng(0)
     rows = []
     for name, (N, K) in SHAPES.items():
         w = vq_weights(rng, N, K)
-        dense = (mx.random.normal((E, N, K)) * 0.02).astype(mx.bfloat16)
-        wq, sc, bi = mx.quantize(dense, group_size=128, bits=3)
-        del dense
+        wq, sc, bi = affine3_weights(rng, N, K)
         c2p = stage2_table(w.c2)
         mx.eval(w, wq, sc, bi, c2p)
+        floor.check(f"g0 {name} weights")
         for T in (1, 8):
             x = mx.random.normal((T, K)).astype(mx.bfloat16)
             ids = [mx.array(rng.integers(0, E, size=(T, S)).astype(np.uint32)) for _ in range(LAYERS)]
