@@ -12,7 +12,7 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest"]
-ref = ["torch==2.13.0", "transformers==5.23.0", "tokenizers", "pyarrow", "jinja2"]
+ref = ["torch==2.13.0", "torchvision", "transformers==5.23.0", "tokenizers", "pyarrow", "jinja2"]
 
 [build-system]
 requires = ["hatchling"]
