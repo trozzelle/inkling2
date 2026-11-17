@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# scripts/studio/w1.sh: runs inside window.sh. Teacher pass (G1b), oQe fidelity and speed (baseline B).
+set -euo pipefail
+R=$INK2Q_ROOT
+REPO=$STUDIO_REPO
+UV=$UV
+D=$R/data
+OQE=$R/models/Inkling-2-Small-oQe-3.07bpw-MLX
+cd "$REPO"
+$UV run python -m ink2q.teacher --source $R/source --tokens $D/heldout.safetensors --out $R/teacher/heldout
+$UV run python -m ink2q.evaluate --source $R/source --tokens $D/heldout.safetensors \
+  --manifest $D/heldout_manifest.json --teacher $R/teacher/heldout --out $R/reports/g1b.json
+PYTHONPATH=$REPO $R/omlx/.venv/bin/python scripts/score_omlx.py --model $OQE --source $R/source \
+  --tokens $D/heldout.safetensors --manifest $D/heldout_manifest.json --teacher $R/teacher/heldout \
+  --out $R/reports/oqe-heldout.json
+KEY=$(openssl rand -hex 16)
+echo "$KEY" > $R/reports/oqe.key
+$R/omlx/.venv/bin/omlx serve --model-dir $R/models --port 8011 --api-key "$KEY" > $R/reports/omlx-serve.log 2>&1 &
+SERVE=$!
+trap 'kill $SERVE 2>/dev/null; wait $SERVE 2>/dev/null' EXIT
+for _ in $(seq 900); do curl -fsS -H "Authorization: Bearer $KEY" http://127.0.0.1:8011/v1/models >/dev/null 2>&1 && break; sleep 2; done
+mkdir -p $R/reports/oqe-speed
+$STUDIO_HOME/bin/studio smoke --base-url http://127.0.0.1:8011/v1 \
+  --model Inkling-2-Small-oQe-3.07bpw-MLX --api-key-file $R/reports/oqe.key \
+  --concurrency 1 --requests 4 --max-tokens 512 --warmup 1 --timeout 1800 \
+  --output $R/reports/oqe-speed/mtp-default.json
