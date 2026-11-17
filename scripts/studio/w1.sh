@@ -6,16 +6,17 @@ REPO=$STUDIO_REPO
 UV=$UV
 D=$R/data
 OQE=$R/models/Inkling-2-Small-oQe-3.07bpw-MLX
+OMLX=$OMLX_BIN   # internal SSD: the data volume is exFAT and its ._ files break venvs
 cd "$REPO"
 $UV run python -m ink2q.teacher --source $R/source --tokens $D/heldout.safetensors --out $R/teacher/heldout
 $UV run python -m ink2q.evaluate --source $R/source --tokens $D/heldout.safetensors \
   --manifest $D/heldout_manifest.json --teacher $R/teacher/heldout --out $R/reports/g1b.json
-PYTHONPATH=$REPO $R/omlx/.venv/bin/python scripts/score_omlx.py --model $OQE --source $R/source \
+PYTHONPATH=$REPO $OMLX/python scripts/score_omlx.py --model $OQE --source $R/source \
   --tokens $D/heldout.safetensors --manifest $D/heldout_manifest.json --teacher $R/teacher/heldout \
   --out $R/reports/oqe-heldout.json
 KEY=$(openssl rand -hex 16)
 echo "$KEY" > $R/reports/oqe.key
-$R/omlx/.venv/bin/omlx serve --model-dir $R/models --port 8011 --api-key "$KEY" > $R/reports/omlx-serve.log 2>&1 &
+$OMLX/omlx serve --model-dir $R/models --port 8011 --api-key "$KEY" > $R/reports/omlx-serve.log 2>&1 &
 SERVE=$!
 trap 'kill $SERVE 2>/dev/null; wait $SERVE 2>/dev/null' EXIT
 for _ in $(seq 900); do curl -fsS -H "Authorization: Bearer $KEY" http://127.0.0.1:8011/v1/models >/dev/null 2>&1 && break; sleep 2; done
