@@ -1,0 +1,29 @@
+[project]
+name = "ink2q"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "mlx==0.32.4",
+  "mlx-lm @ git+https://github.com/jundot/mlx-lm@25c8b4322c5dad4bca0887a6d878d0ffa2655928",
+  "numpy",
+  "safetensors==0.8.0",
+  "huggingface_hub",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+ref = ["torch==2.13.0", "transformers==5.23.0", "tokenizers", "pyarrow", "jinja2"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["ink2q"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["real: needs local real weights or data; skipped when absent"]
