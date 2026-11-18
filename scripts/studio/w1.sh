@@ -19,9 +19,15 @@ echo "$KEY" > $R/reports/oqe.key
 $OMLX/omlx serve --model-dir $R/models --port 8011 --api-key "$KEY" > $R/reports/omlx-serve.log 2>&1 &
 SERVE=$!
 trap 'kill $SERVE 2>/dev/null; wait $SERVE 2>/dev/null' EXIT
-for _ in $(seq 900); do curl -fsS -H "Authorization: Bearer $KEY" http://127.0.0.1:8011/v1/models >/dev/null 2>&1 && break; sleep 2; done
+for _ in $(seq 900); do
+  kill -0 "$SERVE" 2>/dev/null || { echo "omlx serve exited; see omlx-serve.log" >&2; exit 1; }
+  curl -fsS -H "Authorization: Bearer $KEY" http://127.0.0.1:8011/v1/models >/dev/null 2>&1 && break
+  sleep 2
+done
 mkdir -p $R/reports/oqe-speed
-$STUDIO_HOME/bin/studio smoke --base-url http://127.0.0.1:8011/v1 \
+# `studio smoke` forces one request with no warmup; `bench` honours the flags. The warmup request absorbs
+# the model load, which oMLX defers until the first request.
+$STUDIO_HOME/bin/studio bench --base-url http://127.0.0.1:8011/v1 \
   --model Inkling-2-Small-oQe-3.07bpw-MLX --api-key-file $R/reports/oqe.key \
   --concurrency 1 --requests 4 --max-tokens 512 --warmup 1 --timeout 1800 \
-  --output $R/reports/oqe-speed/mtp-default.json
+  --output $R/reports/oqe-speed/mtp-default-$(date +%Y%m%d-%H%M%S).json
