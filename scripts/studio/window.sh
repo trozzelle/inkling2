@@ -21,8 +21,18 @@ restore() {
   vm_stat > "$OUT/vm_stat-post.txt"
   log "restore: done (cmd rc=$rc)"
 }
+CMD_PID=""
+abort() {
+  # bash defers trapped signals until a foreground child returns, so CMD runs in the background and is
+  # signalled here; restore (EXIT trap) then resumes the router.
+  if [ -n "$CMD_PID" ]; then
+    kill -TERM $(descendants "$CMD_PID") "$CMD_PID" 2>/dev/null
+    wait "$CMD_PID" 2>/dev/null
+  fi
+  exit 130
+}
 trap restore EXIT
-trap 'exit 130' INT TERM HUP
+trap abort INT TERM HUP
 vm_stat > "$OUT/vm_stat-pre.txt"
 kill -STOP "$ROUTER_PID"; log "router $ROUTER_PID frozen"
 PIDS=$(descendants "$ROUTER_PID")
@@ -34,7 +44,9 @@ if [ -n "$PIDS" ]; then
 fi
 vm_stat > "$OUT/vm_stat-stopped.txt"
 log "engines stopped; running: $*"
-"$@" > "$OUT/cmd.out" 2> "$OUT/cmd.err"
+"$@" > "$OUT/cmd.out" 2> "$OUT/cmd.err" &
+CMD_PID=$!
+wait "$CMD_PID"
 rc=$?
 log "cmd rc=$rc"
 exit $rc
