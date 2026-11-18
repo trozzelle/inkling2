@@ -15,4 +15,6 @@ uv run --group ref python -I "$B" build        --model "$M" --out "$W"
 uv run --group ref python -I "$B" build-images --model "$M" --out "$W"
 uv run --group ref python -I "$B" check        --model "$M" --out "$W"
 curl -fsSL https://huggingface.co/Baekpica/Inkling-2-Small-VQ-GGUF/raw/main/calibration/SHA256SUMS > "$W/SHA256SUMS.baekpica"
-(cd "$W" && shasum -a 256 -c SHA256SUMS.baekpica)
+# Data files only: the manifests embed the transformers version string (5.23.0 here, 5.23.0.dev0 @ 109a7d19 in
+# the published build) and differ in that string alone.
+(cd "$W" && grep -E 'safetensors|samples_decoded' SHA256SUMS.baekpica | shasum -a 256 -c)
