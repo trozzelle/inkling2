@@ -1,4 +1,11 @@
-"""G1a: per-layer hidden states of the MLX streamed forward against Baekpica's torch reference (CPU), real weights."""
+"""G1a: per-layer hidden states of the MLX streamed forward against Baekpica's torch reference (CPU), real weights.
+
+Two valid bf16 implementations do not agree bit for bit: a last-bit difference in a layer's MoE input flips the
+expert set of a few percent of tokens, and those tokens dominate the RMS difference. The gate is therefore
+relative to a measured noise floor: the reference against itself with its short convolutions run in bf16 (as the
+Transformers 5.23.0 fallback does) instead of FP32. Each layer passes when
+rel_rms(MLX, reference) <= MAX_RATIO * rel_rms(reference bf16-conv, reference).
+"""
 import argparse
 import json
 import sys
@@ -17,6 +24,41 @@ from ink2q.source import SourceIndex  # noqa: E402
 from ink2q.tokens import load_manifest, load_tokens  # noqa: E402
 
 
+MAX_RATIO = 1.5
+_short_conv_fp32 = R.short_conv
+
+
+def _short_conv_bf16(x, w):
+    t, c = x.shape
+    y = torch.nn.functional.conv1d(x.to(w.dtype).t().unsqueeze(0), w.reshape(c, 1, -1),
+                                   padding=w.shape[-1] - 1, groups=c)[0, :, :t].t()
+    return ((y.float() + x.float()) / (w.shape[-1] + 1) ** 0.5).to(x.dtype)
+
+
+def rel_rms(a: np.ndarray, b: np.ndarray) -> float:
+    return float(np.sqrt(((a - b) ** 2).mean() / (b**2).mean()))
+
+
+def reference(source: Path, ids: np.ndarray, layers: int, conv_bf16: bool) -> list[np.ndarray]:
+    R.short_conv = _short_conv_bf16 if conv_bf16 else _short_conv_fp32
+    src = R.Source(source)
+    glob = R.Globals(src, "cpu", head=False)
+    h = glob.embed_ids(torch.tensor(ids))
+    blocks, pos, out = [], torch.arange(len(ids)), []
+    for l in range(layers):
+        lw = R.LayerWeights(l, src.read(src.layer_names(l)), "cpu")
+        resid, mb = R.attn_part(lw, h, blocks, pos, "bf16")
+        y, _ = R.moe(lw, R.mlp_in(lw, resid, mb))
+        new = R.finish_layer(lw, resid, y)
+        if R.is_boundary(l):
+            blocks = blocks + [h]
+        h = new
+        out.append(h.float().numpy())
+        del lw
+        print(json.dumps({"reference_layer": l, "conv_bf16": conv_bf16}), flush=True)
+    R.short_conv = _short_conv_fp32
+    return out
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", type=Path, required=True)
@@ -31,21 +73,8 @@ def main() -> None:
     i = next(k for k, m in enumerate(manifest) if m.get("case") == a.case)
     ids = seqs[i][: a.tokens]
 
-    src = R.Source(a.source)
-    glob = R.Globals(src, "cpu", head=False)
-    h = glob.embed_ids(torch.tensor(ids))
-    blocks, pos, ref = [], torch.arange(len(ids)), []
-    for l in range(a.layers):
-        lw = R.LayerWeights(l, src.read(src.layer_names(l)), "cpu")
-        resid, mb = R.attn_part(lw, h, blocks, pos, "bf16")
-        y, _ = R.moe(lw, R.mlp_in(lw, resid, mb))
-        new = R.finish_layer(lw, resid, y)
-        if R.is_boundary(l):
-            blocks = blocks + [h]
-        h = new
-        ref.append(h.float().numpy())
-        del lw
-        print(json.dumps({"reference_layer": l}), flush=True)
+    ref32 = reference(a.source, ids, a.layers, conv_bf16=False)   # Baekpica's reference as published
+    ref16 = reference(a.source, ids, a.layers, conv_bf16=True)    # same, convolution as Transformers 5.23.0
 
     idx = SourceIndex(a.source)
     m = M.build(idx.config())
@@ -58,11 +87,13 @@ def main() -> None:
         mx.eval(st.h, st.blocks)
         M.drop_layer(m, l)
         ours = np.array(st.h[0].astype(mx.float32))
-        d = ours - ref[l]
-        rows.append({"layer": l, "rel_rms": float(np.sqrt((d**2).mean() / (ref[l] ** 2).mean())),
-                     "max_abs": float(np.abs(d).max())})
+        r32, r16 = ref32[l], ref16[l]
+        floor = rel_rms(r16, r32)
+        rows.append({"layer": l, "rel_rms": rel_rms(ours, r32), "noise_floor": floor,
+                     "ratio": rel_rms(ours, r32) / floor, "max_abs": float(np.abs(ours - r32).max())})
         print(json.dumps(rows[-1]), flush=True)
-    res = {"case": a.case, "tokens": len(ids), "layers": rows, "pass": all(r["rel_rms"] <= 4e-3 for r in rows)}
+    res = {"case": a.case, "tokens": len(ids), "layers": rows, "max_ratio": MAX_RATIO,
+           "pass": all(r["ratio"] <= MAX_RATIO for r in rows)}
     a.out.parent.mkdir(parents=True, exist_ok=True)
     a.out.write_text(json.dumps(res, indent=1) + "\n")
     print(json.dumps({"G1a_pass": res["pass"]}))
