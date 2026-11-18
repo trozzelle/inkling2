@@ -1,9 +1,10 @@
 """Baseline B: teacher-forced score of an oMLX-loaded Inkling 2 build against the MXFP8 teacher's final states.
 
 Runs in the oMLX venv with PYTHONPATH set to this repo (ink2q.score, ink2q.source, ink2q.tokens and
-ink2q.memguard import no mlx-lm). oMLX's `Model.__call__` returns float32 logits over the padded vocabulary,
-softcapped at 30, with -inf on the padding (omlx/patches/inkling2/model.py `logits_from_hidden`, pinned
-624cff0e); they are sliced to the 200,058 real tokens here.
+ink2q.memguard import no mlx-lm). At the pinned oMLX commit 624cff0e, `model.model(ids)` returns the final
+normalized hidden states and `model.logits_from_hidden` gives float32 logits over the padded vocabulary,
+softcapped at 30 with -inf on the padding (omlx/patches/inkling2/model.py); logits are built per 1024-position
+chunk and sliced to the 200,058 real tokens.
 """
 import argparse
 import json
@@ -44,10 +45,13 @@ def main() -> None:
     rows = []
     for i, ids in enumerate(seqs):
         ft = mx.load(str(a.teacher / f"seq-{i:05d}.safetensors"))["final"]
-        z = model(mx.array(ids)[None])[0][:, :VOCAB_REAL].astype(mx.float32)
-        mx.eval(z)
+        # final hidden states only; logits per 1024-position chunk (full [8192, 201024] float32 logits are 6 GiB)
+        h = model.model(mx.array(ids)[None])[0]
+        mx.eval(h)
+        floor.check(f"seq {i}")
         row = score_sequence(ids, manifest[i].get("format", "raw") != "raw",
-                             lambda c0, c1: head_logits(ft[c0:c1], head), lambda c0, c1: z[c0:c1])
+                             lambda c0, c1: head_logits(ft[c0:c1], head),
+                             lambda c0, c1: model.logits_from_hidden(h[c0:c1])[:, :VOCAB_REAL])
         rows.append({"i": i, "case": manifest[i].get("case"), "domain": manifest[i].get("domain"), **row})
         print(json.dumps({"seq": i, "kl": row["kl"] / row["positions"]}), flush=True)
     res = {"rows": rows, "summary": summarize(rows), "load_seconds": round(load_s, 1)}
