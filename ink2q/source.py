@@ -32,7 +32,13 @@ class SourceIndex:
         return sorted({self.weight_map[n] for n in names})
 
     def load(self, names) -> dict[str, mx.array]:
-        """mx.load of a safetensors file is lazy: only the arrays that are evaluated are read."""
+        """Read the named tensors fully before returning.
+
+        mx.load is lazy. If the first consumer of a lazily loaded array is a GPU op, its command buffer
+        waits for the whole read, and a layer (about 12 GiB) from a disk at about 700 MiB/s takes longer
+        than the Metal command-buffer timeout (measured on the inference Mac 2026-11-19: GPU Timeout Error after
+        15.6 s). Evaluating the loads alone runs no GPU work.
+        """
         missing = [n for n in names if n not in self.weight_map]
         if missing:
             raise KeyError(missing)
@@ -43,4 +49,5 @@ class SourceIndex:
         for shard, keys in by_shard.items():
             tensors = mx.load(str(self.root / shard))
             out.update({k: tensors[k] for k in keys})
+        mx.eval(list(out.values()))
         return out
