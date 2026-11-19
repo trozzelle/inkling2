@@ -1,7 +1,7 @@
 import numpy as np
 
 from ink2q.score import slice_of
-from ink2q.stats import paired_bootstrap
+from ink2q.stats import bootstrap_ci, paired_bootstrap
 
 
 def rows(vals, gen=10):
@@ -28,3 +28,9 @@ def test_bootstrap_no_difference_straddles_zero():
     b = a + rng.normal(0, 0.01, size=40)
     r = paired_bootstrap(rows(a), rows(b), "kl", gen=True, n=2000)
     assert r["lo"] < 0 < r["hi"]
+
+
+def test_bootstrap_ci_brackets_the_pooled_mean():
+    rng = np.random.default_rng(2)
+    r = bootstrap_ci(rows(rng.uniform(0.02, 0.08, size=40)), "kl", gen=True, n=2000)
+    assert r["lo"] < r["mean"] < r["hi"] and r["hi"] - r["lo"] < 0.02

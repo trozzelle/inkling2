@@ -19,3 +19,13 @@ def paired_bootstrap(a: list[dict], b: list[dict], key: str, gen: bool, n: int =
     return {"a": sa.sum() / tot, "b": sb.sum() / tot, "diff": (sb.sum() - sa.sum()) / tot,
             "lo": float(np.percentile(diff, 2.5)), "hi": float(np.percentile(diff, 97.5)),
             "p_b_better": float(better.mean())}
+
+
+def bootstrap_ci(rows: list[dict], key: str, gen: bool, n: int = 10000, seed: int = 0) -> dict:
+    """Pooled mean of `key` with a 95% cluster-bootstrap interval over sequences."""
+    k, d = (key + "_gen", "generated") if gen else (key, "positions")
+    s = np.array([r[k] for r in rows], np.float64)
+    c = np.array([r[d] for r in rows], np.float64)
+    idx = np.random.default_rng(seed).integers(0, len(rows), size=(n, len(rows)))
+    m = s[idx].sum(1) / c[idx].sum(1)
+    return {"mean": s.sum() / c.sum(), "lo": float(np.percentile(m, 2.5)), "hi": float(np.percentile(m, 97.5))}
