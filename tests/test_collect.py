@@ -35,6 +35,21 @@ def test_expert_stats_match_numpy():
         assert np.abs(host["xx_norm"][e] - want).max() / np.abs(want).max() < 2e-5
 
 
+def test_to_host_covers_only_tracked_experts():
+    m = create_model()
+    quantize_experts_mxfp8(m)
+    L = m.model.language_model.layers[2]
+    x = mx.random.normal((40, CONFIG["text_config"]["hidden_size"]), key=mx.random.key(1)).astype(mx.bfloat16)
+    full = C.ExpertStats(L, None, raw=True, normalized=False)
+    part = C.ExpertStats(L, [3, 1], raw=True, normalized=False)
+    full.add(x); part.add(x)
+    hf, hp = full.to_host(np.float32), part.to_host(np.float32)
+    assert hp["xx_raw"].shape[0] == 2 and hp["xx_raw"].dtype == np.float32
+    assert list(hp["experts"]) == [3, 1]
+    np.testing.assert_array_equal(hp["xx_raw"][0], hf["xx_raw"][3])
+    np.testing.assert_array_equal(hp["count"], hf["count"][[3, 1]])
+
+
 def test_activations_match_the_layer_experts():
     m = create_model()
     quantize_experts_mxfp8(m)

@@ -109,15 +109,17 @@ class ExpertStats:
                 self.held_rows.append((e, xe, self._act(xe, e)))
 
     def to_host(self, dtype=np.float64) -> dict:
-        out = {"count": self.count, "x2": self.x2, "a2": self.a2}
-        n = len(self.count)
+        """Per-expert arrays for the tracked experts only, in the order of self.experts (key "experts")."""
+        ex = np.array(self.experts)
+        out = {"experts": ex, "count": self.count[ex], "x2": self.x2[ex], "a2": self.a2[ex]}
         for k, d in self.g.items():
             if not d:
                 continue
             dim = self.H if k.startswith("xx") else self.F
-            arr = np.zeros((n, dim, dim), dtype)
-            for e, g in d.items():
-                arr[e] = np.array(g, dtype)
+            arr = np.zeros((len(ex), dim, dim), dtype)
+            for j, e in enumerate(self.experts):
+                if e in d:
+                    arr[j] = np.array(d[e], dtype)
             out[k] = arr
         return out
 
