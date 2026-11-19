@@ -1,7 +1,9 @@
-import torch
+import pytest
 
-from ink2q.quant import gptq as G
-from ink2q.quant.hessian import expert_h
+torch = pytest.importorskip("torch")
+
+from ink2q.quant import gptq as G  # noqa: E402
+from ink2q.quant.hessian import expert_h  # noqa: E402
 
 
 def corr_h(K, rho=0.9):
