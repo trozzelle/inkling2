@@ -58,7 +58,9 @@ def main(argv=None) -> None:
         if conv is None:
             continue
         msgs, tools = R.to_inkling(conv, defang)
-        if len(long) < a.long_n and g not in long_groups:
+        if g in long_groups:
+            continue                           # a long-context group is not reused for the agentic set
+        if len(long) < a.long_n and g not in agentic_groups:
             for w in R.windows(msgs, tools, tok, 2 * a.long_ctx):
                 if len(w) >= a.long_ctx:
                     long.append(w[: a.long_ctx])
@@ -67,7 +69,7 @@ def main(argv=None) -> None:
                     long_groups.add(g)
                     break
             if g in long_groups:
-                continue                       # a long-context group is not reused for the agentic set
+                continue
         if gen_total < a.agentic_gen and sum(m["group"] == g for m in a_man) < a.per_group:
             ws = R.windows(msgs, tools, tok, a.agentic_len)
             if not ws:
