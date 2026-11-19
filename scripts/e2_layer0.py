@@ -144,23 +144,36 @@ def main():
             herr[w] = float(torch.cat(errs).mean())
         return hats, herr
 
-    configs = list(itertools.product(("raw", "norm"), (1024.0, 4096.0, 16384.0), (1.0, 0.75)))
-    for kind, shrink, power in configs:
-        for bits in (2, 3, 4):
-            hats, herr = gptq_hats(kind, shrink, power, bits, damp=0.01, refit=1)
-            record("gptq", hats, kind=kind, shrink=shrink, power=power, bits=bits, damp=0.01, refit=1,
-                   bpw=bits + 0.25, h_err_w13=herr["gate_up"], h_err_w2=herr["down"])
-            a.out.write_text(json.dumps({"rows": rows, "partial": True}, indent=1) + "\n")
-    g3 = [r for r in rows if r["method"] == "gptq" and r["bits"] == 3]
-    best = min(g3, key=lambda r: r["rel_out_w13"] + r["rel_out_w2"])
-    for damp, refit in ((0.01, 0), (0.0, 1), (0.1, 1)):                  # ablations on the best configuration
-        hats, herr = gptq_hats(best["kind"], best["shrink"], best["power"], 3, damp, refit)
-        record("gptq", hats, kind=best["kind"], shrink=best["shrink"], power=best["power"], bits=3, damp=damp,
-               refit=refit, bpw=3.25, h_err_w13=herr["gate_up"], h_err_w2=herr["down"])
-    g3 = [r for r in rows if r["method"] == "gptq" and r["bits"] == 3]
-    best = min(g3, key=lambda r: r["rel_out_w13"] + r["rel_out_w2"])
-    a.out.write_text(json.dumps({"rows": rows, "best": {k: best[k] for k in ("kind", "shrink", "power", "damp", "refit")}},
-                                indent=1) + "\n")
+    def run(kind, shrink, power, bits, damp, refit):
+        hats, herr = gptq_hats(kind, shrink, power, bits, damp, refit)
+        record("gptq", hats, kind=kind, shrink=shrink, power=power, bits=bits, damp=damp, refit=refit,
+               bpw=bits + 0.25, h_err_w13=herr["gate_up"], h_err_w2=herr["down"])
+
+    def best_of(rows):
+        g3 = [r for r in rows if r["method"] == "gptq" and r["bits"] == 3]
+        return min(g3, key=lambda r: r["rel_out_w13"] + r["rel_out_w2"])
+
+    def save(final):
+        best = best_of(rows)
+        a.out.write_text(json.dumps({"rows": rows, "partial": not final,
+                                     "best": {k: best[k] for k in ("kind", "shrink", "power", "damp", "refit")}},
+                                    indent=1) + "\n")
+
+    # 1. every H configuration at 3 bits, where `best` is chosen
+    for kind, shrink, power in itertools.product(("raw", "norm"), (1024.0, 4096.0, 16384.0), (1.0, 0.75)):
+        run(kind, shrink, power, 3, 0.01, 1)
+        save(False)
+    # 2. damp and refit ablations on the best configuration; `best` is chosen again over all 3-bit rows
+    b = best_of(rows)
+    for damp, refit in ((0.01, 0), (0.0, 1), (0.1, 1)):
+        run(b["kind"], b["shrink"], b["power"], 3, damp, refit)
+        save(False)
+    # 3. the final best configuration at 2 and 4 bits (gain over RTN and oQe per width)
+    b = best_of(rows)
+    for bits in (2, 4):
+        run(b["kind"], b["shrink"], b["power"], bits, b["damp"], b["refit"])
+        save(False)
+    save(True)
 
 
 if __name__ == "__main__":
