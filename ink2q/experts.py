@@ -6,7 +6,7 @@ from pathlib import Path
 
 import mlx.core as mx
 from mlx import nn
-from mlx_lm.models.switch_layers import QuantizedSwitchLinear
+from mlx_lm.models.switch_layers import QuantizedSwitchLinear, _quantize_experts
 
 
 def affine_switch(weight, scales, biases, bits, group_size=128, mode="affine") -> QuantizedSwitchLinear:
@@ -58,10 +58,14 @@ def rtn(layer_module, bits_gu, bits_dn, group_size=128, chunk=32) -> ExpertSpec:
 
 
 def nvfp4(layer_module, chunk=32) -> ExpertSpec:
+    """NVFP4 with a per-expert fp32 tensor scale, as the real format and mlx-lm's expert quantizer use."""
     mods = []
     for which in ("gate_up", "down"):
-        w, s = _chunked(layer_module, which, lambda t: mx.quantize(t, group_size=16, bits=4, mode="nvfp4"), chunk)
-        mods.append(affine_switch(w, s, None, 4, 16, mode="nvfp4"))
+        w, s, gs = _chunked(layer_module, which,
+                            lambda t: _quantize_experts(t, group_size=16, bits=4, mode="nvfp4"), chunk)
+        m = affine_switch(w, s, None, 4, 16, mode="nvfp4")
+        m.global_scale = gs
+        mods.append(m)
     return ExpertSpec(mods[0], mods[1], "nvfp4")
 
 
