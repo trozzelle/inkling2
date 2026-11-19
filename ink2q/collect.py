@@ -56,20 +56,15 @@ class ExpertStats:
         self.a2 = np.zeros((n, self.F))
         self.g: dict[str, dict[int, mx.array]] = {k: {} for k in ("xx_raw", "aa_raw", "xx_norm", "aa_norm")}
         self.held_rows: list = []
-        self._w = {}
-
-    def _weights(self, e):
-        if e not in self._w:
-            self._w[e] = (source_bf16(self.L, "gate_up", slice(e, e + 1))[0],
-                          source_bf16(self.L, "down", slice(e, e + 1))[0])
-        return self._w[e]
 
     def _route(self, x):
         inds, _ = self.L.mlp.gate(x)
         return np.array(inds)
 
     def _act(self, xe, e):
-        gu, _ = self._weights(e)
+        """Expert activations from the source weights, dequantized on demand (no cache: a full layer's experts
+        would hold about 24 GiB of bf16 weights)."""
+        gu = source_bf16(self.L, "gate_up", slice(e, e + 1))[0]
         y = xe @ gu.T
         return _softcapped_swiglu(y[:, 0::2], y[:, 1::2], self.gcap, self.ucap)
 
@@ -108,8 +103,9 @@ class ExpertStats:
                 xe = x[mx.array(rows)]
                 self.held_rows.append((e, xe, self._act(xe, e)))
 
-    def to_host(self, dtype=np.float64) -> dict:
-        """Per-expert arrays for the tracked experts only, in the order of self.experts (key "experts")."""
+    def to_host(self, dtype=np.float64, release: bool = False) -> dict:
+        """Per-expert arrays for the tracked experts only, in the order of self.experts (key "experts").
+        release=True frees each device Gram as soon as it is copied, so device and host copies never coexist."""
         ex = np.array(self.experts)
         out = {"experts": ex, "count": self.count[ex], "x2": self.x2[ex], "a2": self.a2[ex]}
         for k, d in self.g.items():
@@ -119,11 +115,36 @@ class ExpertStats:
             arr = np.zeros((len(ex), dim, dim), dtype)
             for j, e in enumerate(self.experts):
                 if e in d:
-                    arr[j] = np.array(d[e], dtype)
+                    arr[j] = np.array(d.pop(e) if release else d[e], dtype)
             out[k] = arr
+            if release:
+                mx.clear_cache()
         return out
 
     def drop_device(self) -> None:
         for d in self.g.values():
             d.clear()
         mx.clear_cache()
+
+
+def step_with_stats(model, layer: int, states: list, stats: "ExpertStats", chunk_tokens: int = 65536) -> list:
+    """Step every lean state through `layer`, feeding its MoE inputs to `stats` in chunks of about chunk_tokens
+    (one Gram update per expert per chunk instead of per sequence). Returns the new states."""
+    from ink2q import stream as S
+    mod = model.model.language_model.layers[layer]
+    out, buf, n = [], [], 0
+    for st in states:
+        with capture(mod) as sink:
+            nxt = S.step_lean(model, layer, st)
+            x = sink[-1][0]
+            mx.eval(nxt.h, x)
+        out.append(nxt)
+        buf.append(x)
+        n += x.shape[0]
+        if n >= chunk_tokens:
+            stats.add(mx.concatenate(buf))
+            buf, n = [], 0
+    if buf:
+        stats.add(mx.concatenate(buf))
+    return out
+
