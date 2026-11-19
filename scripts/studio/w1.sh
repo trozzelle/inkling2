@@ -16,7 +16,9 @@ PYTHONPATH=$REPO $OMLX/python scripts/score_omlx.py --model $OQE --source $R/sou
   --out $R/reports/oqe-heldout.json
 KEY=$(openssl rand -hex 16)
 echo "$KEY" > $R/reports/oqe.key
-$OMLX/omlx serve --model-dir $R/models --port 8011 --api-key "$KEY" > $R/reports/omlx-serve.log 2>&1 &
+# the default guard (balanced) sets a 221.7 GB hard limit and rejects every prompt for this 217.7 GB build
+$OMLX/omlx serve --model-dir $R/models --port 8011 --api-key "$KEY" --memory-guard-gb 240 \
+  > $R/reports/omlx-serve.log 2>&1 &
 SERVE=$!
 trap 'kill $SERVE 2>/dev/null; wait $SERVE 2>/dev/null' EXIT
 for _ in $(seq 900); do

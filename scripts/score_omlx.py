@@ -36,8 +36,14 @@ def main() -> None:
     floor = Floor(8)
     t0 = time.monotonic()
     model, _ = vlm.load(str(a.model), lazy=True)
-    for _, p in tree_flatten(model.parameters()):
+    done = 0
+    for k, p in tree_flatten(model.parameters()):
         mx.eval(p)
+        done += p.nbytes
+        if done // (8 << 30) != (done - p.nbytes) // (8 << 30):  # every 8 GiB loaded
+            print(json.dumps({"loaded_gib": round(done / 2**30, 1), "active_gib": round(mx.get_active_memory() / 2**30, 1),
+                              "peak_gib": round(mx.get_peak_memory() / 2**30, 1), "last": k}), flush=True)
+            floor.check(f"load {done / 2**30:.0f} GiB")
     load_s = time.monotonic() - t0
     floor.check("model loaded")
     head = SourceIndex(a.source).load(["model.llm.unembed.weight"])["model.llm.unembed.weight"]
