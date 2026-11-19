@@ -52,3 +52,24 @@ def test_teacher_writes_final_and_scores_itself(tmp_path):
     sv = res_v["summary"]
     assert sv["kl"] > 1e-3 and sv["top1"] < 1.0
     assert abs(sv["nll_teacher"] - s["nll_teacher"]) < 1e-6
+
+
+def test_variant_run_equals_model_with_swapped_experts(tmp_path):
+    from ink2q import experts as X
+    from ink2q import stream as S
+    full = create_model()
+    quantize_experts_mxfp8(full)
+    write_checkpoint(checkpoint(full), tmp_path / "src", CONFIG)
+    seq = np.random.default_rng(3).integers(0, 120, size=(16,))
+    teacher.run(SourceIndex(tmp_path / "src"), [seq], tmp_path / "v",
+                variant=lambda mod, l: X.rtn(mod, 4, 4, group_size=32) if l == 3 else None)
+    got = mx.load(str(tmp_path / "v" / "seq-00000.safetensors"))["final"]
+    L3 = full.model.language_model.layers[3]
+    with X.install(L3, X.rtn(L3, 4, 4, group_size=32)):
+        st = S.embed(full, mx.array(seq))
+        for l in range(CONFIG["text_config"]["num_hidden_layers"]):
+            st = S.step(full, l, st)
+        want = S.final_hidden(full, st)
+    assert mx.array_equal(got, want)
+    teacher.run(SourceIndex(tmp_path / "src"), [seq], tmp_path / "t")
+    assert not mx.array_equal(got, mx.load(str(tmp_path / "t" / "seq-00000.safetensors"))["final"])
