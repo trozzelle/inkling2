@@ -6,6 +6,7 @@ from pathlib import Path
 import mlx.core as mx
 import numpy as np
 
+from ink2q.memguard import apply_limits
 from ink2q.score import head_logits, score_sequence, slice_of, summarize
 from ink2q.source import SourceIndex
 from ink2q.tokens import load_manifest, load_tokens
@@ -55,6 +56,9 @@ def main_args(argv: list[str] | None = None) -> dict:
     ap.add_argument("--vocab-real", type=int, default=200058)
     ap.add_argument("--positions", type=Path, help="write per-position kl/top1/gen arrays to this .npz")
     a = ap.parse_args(argv)
+    # without a cache limit MLX keeps every odd-sized logits buffer (each sequence's last chunk differs in
+    # length): an 84-sequence set grew past 110 GiB and was killed in W2
+    apply_limits(48, 4)
     head = load_head(SourceIndex(a.source))
     seqs, manifest = load_tokens(a.tokens), load_manifest(a.manifest)
     if a.variants_root:
