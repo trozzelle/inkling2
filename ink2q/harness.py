@@ -108,6 +108,8 @@ def _builder(spec: dict) -> Callable:
     if kind == "mlx":
         layer = spec["layer"]
         return lambda mod: X.from_mlx_dir(Path(spec["dir"]), layer)
+    if kind == "source":     # the layer's own experts: a null variant that must equal the teacher exactly
+        return lambda mod: X.ExpertSpec(mod.mlp.experts.gate_up_proj, mod.mlp.experts.down_proj, "source")
     raise ValueError(kind)
 
 

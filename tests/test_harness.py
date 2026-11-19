@@ -43,6 +43,16 @@ def test_variants_match_direct_forward_and_teacher(tmp_path):
         assert not mx.array_equal(f("a"), f("teacher"))
 
 
+def test_source_variant_equals_teacher(tmp_path):
+    full, seqs = setup(tmp_path)
+    import json
+    (tmp_path / "v.json").write_text(json.dumps([{"name": "null", "layers": {"0": {"kind": "source"}, "4": {"kind": "source"}}}]))
+    Hn.run(SourceIndex(tmp_path / "src"), seqs, Hn.load_variants(tmp_path / "v.json"), tmp_path / "out", budget_gib=1.0)
+    for i in range(len(seqs)):
+        f = lambda name: mx.load(str(tmp_path / "out" / name / f"seq-{i:05d}.safetensors"))["final"]
+        assert mx.array_equal(f("null"), f("teacher"))
+
+
 def test_multiple_passes_give_same_results(tmp_path):
     full, seqs = setup(tmp_path)
     rtn2 = lambda mod: X.rtn(mod, 2, 2, group_size=32)
