@@ -6,7 +6,8 @@ def bf16(t: torch.Tensor) -> torch.Tensor:
     return t.to(torch.bfloat16).to(torch.float64)
 
 
-def _inv_chol_upper(H: torch.Tensor, damp: float):
+def factor(H: torch.Tensor, damp: float):
+    """(upper Cholesky factor of the damped H⁻¹, dead-column mask); reusable for every width and refit pass."""
     H = H.clone()
     d = H.diagonal(dim1=-2, dim2=-1)
     dead = d <= 0
@@ -17,13 +18,14 @@ def _inv_chol_upper(H: torch.Tensor, damp: float):
     return torch.linalg.cholesky(Hinv, upper=True), dead
 
 
-def quantize(W, H, bits, group=128, damp=0.01, block=128, scales=None, biases=None):
+def quantize(W, H, bits, group=128, damp=0.01, block=128, scales=None, biases=None, fac=None):
     """W [P,R,K], H [P,K,K] -> codes uint8 [P,R,K], scales and biases [P,R,K/group] (bf16 values in float64).
-    Group affine parameters come from the error-updated weights at group entry unless given."""
+    Group affine parameters come from the error-updated weights at group entry unless given. `fac` is
+    factor(H, damp), computed here if not given."""
     P, R, K = W.shape
     qmax = 2**bits - 1
     G = K // group
-    U, dead = _inv_chol_upper(H, damp)
+    U, dead = fac if fac is not None else factor(H, damp)
     W = W.clone()
     W.masked_fill_(dead[:, None, :], 0.0)
     Q = torch.zeros(P, R, K, dtype=torch.uint8)
@@ -94,11 +96,12 @@ def refit(W, Q, H, group, S_old, B_old):
     return S, B
 
 
-def convert(W, H, bits, group=128, damp=0.01, refit_passes=1):
+def convert(W, H, bits, group=128, damp=0.01, refit_passes=1, fac=None):
     """GPTQ, then refit_passes rounds of (refit, GPTQ with the refit grid fixed), then a final refit."""
-    Q, S, B = quantize(W, H, bits, group, damp)
+    fac = fac if fac is not None else factor(H, damp)
+    Q, S, B = quantize(W, H, bits, group, damp, fac=fac)
     for _ in range(refit_passes):
         S, B = refit(W, Q, H, group, S, B)
-        Q, S, B = quantize(W, H, bits, group, damp, scales=S, biases=B)
+        Q, S, B = quantize(W, H, bits, group, damp, scales=S, biases=B, fac=fac)
     S, B = refit(W, Q, H, group, S, B)
     return Q, S, B, h_error(W, dequant(Q, S, B, group), H)

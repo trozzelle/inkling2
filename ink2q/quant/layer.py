@@ -15,7 +15,7 @@ from ink2q.quant.pack import pack_affine
 PROJ = (("w13", "gate_up", "xx"), ("w2", "down", "aa"))
 
 
-def convert_layer(mod, layer: int, host: dict, widths: dict, cfg: dict, out: Path) -> dict:
+def convert_layer(mod, layer: int, host: dict, widths: dict, cfg: dict, out: Path, floor=None) -> dict:
     """host: ExpertStats.to_host() over all experts; widths: {"w13": [bits...], "w2": [bits...]};
     cfg: kind, shrink, power, damp, refit, group, batch. Returns a receipt (h_err per width, counts, seconds)."""
     t0 = time.monotonic()
@@ -28,18 +28,27 @@ def convert_layer(mod, layer: int, host: dict, widths: dict, cfg: dict, out: Pat
         prior = None
         if w == "w13":   # gate/up experts share the hidden space: shrink toward the layer mean
             prior = torch.from_numpy(Sg.sum(0, dtype=np.float64)) / max(int(n.sum()), 1)
-        acc = {b: {"Q": [], "S": [], "B": [], "err": []} for b in widths[w]}
+        acc = {b: {"W": [], "S": [], "B": [], "err": []} for b in widths[w]}
         for e0 in range(0, Sg.shape[0], cfg["batch"]):
             sl = slice(e0, e0 + cfg["batch"])
             H = expert_h(torch.from_numpy(np.asarray(Sg[sl], np.float64)), n[sl], prior, cfg["shrink"], cfg["power"])
             W = torch.from_numpy(np.array(X.source_bf16(mod, which, sl).astype(mx.float32), np.float64))
+            fac = G.factor(H, cfg["damp"])
             for b in widths[w]:
-                Q, Sc, Bi, err = G.convert(W, H, b, group=cfg["group"], damp=cfg["damp"], refit_passes=cfg["refit"])
+                Q, Sc, Bi, err = G.convert(W, H, b, group=cfg["group"], damp=cfg["damp"], refit_passes=cfg["refit"],
+                                           fac=fac)
+                # pack and verify per batch: a whole-layer pack_affine check peaks near 10x the code bytes
+                words, s, bb = pack_affine(Q.numpy(), Sc.numpy(), Bi.numpy(), b, cfg["group"])
+                mx.eval(words, s, bb)
                 a = acc[b]
-                a["Q"].append(Q.numpy()); a["S"].append(Sc.numpy()); a["B"].append(Bi.numpy()); a["err"].append(err.numpy())
+                a["W"].append(words)
+                a["S"].append(s)
+                a["B"].append(bb)
+                a["err"].append(err.numpy())
+            if floor is not None:
+                floor.check(f"layer {layer} {w} experts {e0}-{e0 + cfg['batch'] - 1}")
         for b, a in acc.items():
-            words, s, bb = pack_affine(np.concatenate(a["Q"]), np.concatenate(a["S"]), np.concatenate(a["B"]), b,
-                                       cfg["group"])
+            words, s, bb = mx.concatenate(a["W"]), mx.concatenate(a["S"]), mx.concatenate(a["B"])
             f = expert_file(out, layer, w, b)
             f.parent.mkdir(parents=True, exist_ok=True)
             prefix = f"model.layers.{layer}.mlp.experts.{w}"

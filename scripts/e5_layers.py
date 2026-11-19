@@ -69,7 +69,7 @@ def main():
             host = st.to_host(np.float32, release=True)
             del st
             avail = floor.check(f"layer {layer} statistics")
-            rec = convert_layer(mod, layer, host, {"w13": BITS, "w2": BITS}, cfg, a.out)
+            rec = convert_layer(mod, layer, host, {"w13": BITS, "w2": BITS}, cfg, a.out, floor=floor)
             del host
             rec.update(stats_seconds=round(t_stats, 1), available_gib=round(avail / 2**30, 1))
             receipts.append(rec)
