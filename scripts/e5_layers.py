@@ -30,6 +30,11 @@ def variants(layers, out: Path, oqe: str) -> list[dict]:
         for b in BITS:
             vs.append({"name": f"rtn{b}_L{l}", "layers": {str(l): {"kind": "rtn", "bits_gu": b, "bits_dn": b}}})
         vs.append({"name": f"oqe_L{l}", "layers": {str(l): {"kind": "mlx", "dir": oqe}}})
+    # whole-model floor: an 8-bit perturbation of every layer bounds what any quantization can reach; 4-bit and
+    # all-oQe place the headroom between that floor and the baseline
+    for b in (8, 4):
+        vs.append({"name": f"rtn{b}_all", "layers": {str(l): {"kind": "rtn", "bits_gu": b, "bits_dn": b} for l in range(48)}})
+    vs.append({"name": "oqe_all", "layers": {str(l): {"kind": "mlx", "dir": oqe} for l in range(48)}})
     return vs
 
 
