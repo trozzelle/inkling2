@@ -30,11 +30,12 @@ def head_logits(final: mx.array, head: mx.array, vocab_real: int = 200058, cap: 
     return (mx.tanh(z / cap) * cap)[:, :vocab_real]
 
 
-def score_sequence(ids: np.ndarray, chat: bool, zt_fn, zv_fn, chunk: int = 1024) -> dict:
+def score_sequence(ids: np.ndarray, chat: bool, zt_fn, zv_fn, chunk: int = 1024, positions: bool = False) -> dict:
     n = len(ids) - 1
     gen = generated_mask(ids, chat)
     tgt = mx.array(ids[1:])
     acc = {k: 0.0 for k in KEYS} | {k + "_gen": 0.0 for k in KEYS}
+    kls, tops = [], []
     for c0 in range(0, n, chunk):
         c1 = min(n, c0 + chunk)
         zt, zv = zt_fn(c0, c1), zv_fn(c0, c1)
@@ -51,7 +52,22 @@ def score_sequence(ids: np.ndarray, chat: bool, zt_fn, zv_fn, chunk: int = 1024)
         for k, v in vals.items():
             acc[k] += float(v.sum())
             acc[k + "_gen"] += float((v * g).sum())
-    return {"positions": n, "generated": int(gen.sum()), **acc}
+        if positions:
+            kls.append(np.array(vals["kl"]))
+            tops.append(np.array(vals["top1"]) > 0.5)
+    out = {"positions": n, "generated": int(gen.sum()), **acc}
+    if positions:
+        out["pos"] = {"kl": np.concatenate(kls).astype(np.float32), "top1": np.concatenate(tops).astype(bool), "gen": gen}
+    return out
+
+
+AGENTIC_DOMAINS = {"agent_tool", "agent_swe", "ds4_prompts"}
+
+
+def slice_of(meta: dict) -> str:
+    if meta.get("source") == "session" or meta.get("domain") in AGENTIC_DOMAINS:
+        return "agentic"
+    return "raw" if meta.get("format", "raw") == "raw" else "chat"
 
 
 def summarize(rows: list[dict]) -> dict:

@@ -4,8 +4,9 @@ import json
 from pathlib import Path
 
 import mlx.core as mx
+import numpy as np
 
-from ink2q.score import head_logits, score_sequence, summarize
+from ink2q.score import head_logits, score_sequence, slice_of, summarize
 from ink2q.source import SourceIndex
 from ink2q.tokens import load_manifest, load_tokens
 
@@ -23,11 +24,12 @@ def main_args(argv: list[str] | None = None) -> dict:
     ap.add_argument("--variant", type=Path)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--vocab-real", type=int, default=200058)
+    ap.add_argument("--positions", type=Path, help="write per-position kl/top1/gen arrays to this .npz")
     a = ap.parse_args(argv)
     variant = a.variant or a.teacher
     head = load_head(SourceIndex(a.source))
     seqs, manifest = load_tokens(a.tokens), load_manifest(a.manifest)
-    rows = []
+    rows, pos = [], {}
     for i, ids in enumerate(seqs):
         ft = mx.load(str(a.teacher / f"seq-{i:05d}.safetensors"))["final"]
         fv = mx.load(str(variant / f"seq-{i:05d}.safetensors"))["final"]
@@ -36,9 +38,20 @@ def main_args(argv: list[str] | None = None) -> dict:
             ids, meta.get("format", "raw") != "raw",
             lambda c0, c1: head_logits(ft[c0:c1], head, a.vocab_real),
             lambda c0, c1: head_logits(fv[c0:c1], head, a.vocab_real),
+            positions=bool(a.positions),
         )
-        rows.append({"i": i, "case": meta.get("case"), "domain": meta.get("domain"), **row})
+        if a.positions:
+            for k, v in row.pop("pos").items():
+                pos[f"{i}_{k}"] = v
+        rows.append({"i": i, "case": meta.get("case"), "domain": meta.get("domain"),
+                     "format": meta.get("format", "raw"), "source": meta.get("source"), **row})
     res = {"rows": rows, "summary": summarize(rows)}
+    res["slices"] = {s: summarize([r for r in rows if slice_of(r) == s]) for s in sorted({slice_of(r) for r in rows})}
+    per_dom = [summarize([r for r in rows if r["domain"] == d]) for d in sorted({r["domain"] for r in rows}, key=str)]
+    res["macro_domain"] = float(np.mean([s.get("kl_gen", s["kl"]) for s in per_dom]))
+    if a.positions:
+        a.positions.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(a.positions, **pos)
     a.out.parent.mkdir(parents=True, exist_ok=True)
     a.out.write_text(json.dumps(res, indent=1) + "\n")
     print(json.dumps(res["summary"], indent=1))
