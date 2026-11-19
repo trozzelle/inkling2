@@ -17,8 +17,8 @@ def main_args(argv=None) -> dict:
     ra, rb = json.loads(x.a.read_text())["rows"], json.loads(x.b.read_text())["rows"]
     assert [r["i"] for r in ra] == [r["i"] for r in rb], "different token sets"
     groups = {"all": list(range(len(ra)))}
-    for j, r in enumerate(ra):
-        groups.setdefault(slice_of(r), []).append(j)
+    for j, (r, s) in enumerate(zip(ra, rb)):        # served-path rows carry no format; use the side that does
+        groups.setdefault(slice_of(r if "format" in r else s), []).append(j)
     out = {"a": str(x.a), "b": str(x.b), "slices": {}}
     for name, js in groups.items():
         sel_a, sel_b = [ra[j] for j in js], [rb[j] for j in js]

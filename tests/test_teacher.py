@@ -73,3 +73,17 @@ def test_variant_run_equals_model_with_swapped_experts(tmp_path):
     assert mx.array_equal(got, want)
     teacher.run(SourceIndex(tmp_path / "src"), [seq], tmp_path / "t")
     assert not mx.array_equal(got, mx.load(str(tmp_path / "t" / "seq-00000.safetensors"))["final"])
+
+
+def test_run_sets_equals_separate_runs(tmp_path):
+    full = create_model()
+    quantize_experts_mxfp8(full)
+    write_checkpoint(checkpoint(full), tmp_path / "src", CONFIG)
+    rng = np.random.default_rng(5)
+    a, b = [rng.integers(0, 120, size=(n,)) for n in (7, 11)], [rng.integers(0, 120, size=(9,))]
+    src = SourceIndex(tmp_path / "src")
+    teacher.run_sets(src, [(a, tmp_path / "A"), (b, tmp_path / "B")])
+    teacher.run(src, b, tmp_path / "B1")
+    f = lambda d, i: mx.load(str(tmp_path / d / f"seq-{i:05d}.safetensors"))["final"]
+    assert mx.array_equal(f("B", 0), f("B1", 0))
+    assert (tmp_path / "A" / "seq-00001.safetensors").exists() and not (tmp_path / "A" / "seq-00002.safetensors").exists()
