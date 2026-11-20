@@ -82,6 +82,7 @@ def main() -> None:
     ap.add_argument("--cache-gib", type=float, default=4)
     ap.add_argument("--floor-gib", type=float, default=24)
     ap.add_argument("--variant-mlx", type=Path, help="oMLX-layout checkpoint whose experts replace every layer's")
+    ap.add_argument("--variant-kortexa", type=Path, help="kortexa EXL3 pack whose decoded experts replace every layer's")
     a = ap.parse_args()
     if len(a.tokens) != len(a.out):
         ap.error("--tokens and --out need the same number of paths")
@@ -90,7 +91,12 @@ def main() -> None:
     for t, o in zip(a.tokens, a.out):
         seqs = load_tokens(t)
         sets.append((seqs[: a.limit] if a.limit else seqs, o))
-    variant = (lambda mod, l: X.from_mlx_dir(a.variant_mlx, l)) if a.variant_mlx else None
+    variant = None
+    if a.variant_mlx:
+        variant = lambda mod, l: X.from_mlx_dir(a.variant_mlx, l)  # noqa: E731
+    elif a.variant_kortexa:
+        from ink2q.exl3 import kortexa_spec
+        variant = lambda mod, l: kortexa_spec(a.variant_kortexa, l)  # noqa: E731
     run_sets(SourceIndex(a.source), sets, Floor(a.floor_gib), variant=variant)
 
 
