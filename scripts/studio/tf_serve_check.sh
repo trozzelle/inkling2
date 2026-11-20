@@ -10,7 +10,7 @@ PORT=8199
 TFBIN=$(find $STUDIO_HOME/runtimes/tensorfold -maxdepth 7 -type f -name tensorfold-native -path "*$RID*" | head -1)
 [ -x "$TFBIN" ] || { echo "no tensorfold-native server for runtime $RID" >&2; exit 1; }
 mkdir -p $W
-"$TFBIN" serve "$PACK" --name inkling2-exl3-tf --context 32768 --parallel 1 --port $PORT > $W/serve.log 2>&1 &
+"$TFBIN" serve "$PACK" --name inkling2-exl3-tf --context 32768 --parallel 1 --load-limit-gb 236 --port $PORT > $W/serve.log 2>&1 &
 SERVER=$!
 trap 'kill $SERVER 2>/dev/null; wait $SERVER 2>/dev/null' EXIT
 for i in $(seq 1 120); do
