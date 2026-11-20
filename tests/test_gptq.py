@@ -11,6 +11,17 @@ def corr_h(K, rho=0.9):
     return rho ** (idx[:, None] - idx[None, :]).abs()
 
 
+def test_factor_is_upper_root_of_damped_inverse():
+    torch.manual_seed(4)
+    X = torch.randn(3, 200, 64, dtype=torch.float64)
+    H = X.mT @ X / 200
+    U, dead = G.factor(H, 0.1)
+    Hd = H.clone()
+    Hd.diagonal(dim1=-2, dim2=-1).add_(0.1 * H.diagonal(dim1=-2, dim2=-1).mean(-1, keepdim=True))
+    assert torch.equal(U, U.triu()) and not dead.any()
+    assert torch.allclose(U.mT @ U, torch.linalg.inv(Hd), rtol=1e-9, atol=1e-12)
+
+
 def test_identity_h_equals_rtn_on_the_same_grid():
     torch.manual_seed(0)
     W = torch.randn(1, 8, 64, dtype=torch.float64)

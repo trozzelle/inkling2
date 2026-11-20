@@ -15,7 +15,9 @@ def factor(H: torch.Tensor, damp: float):
     d.add_(damp * d.mean(-1, keepdim=True))
     L = torch.linalg.cholesky(H)
     Hinv = torch.cholesky_inverse(L)
-    return torch.linalg.cholesky(Hinv, upper=True), dead
+    # U = Lᵀ for H⁻¹ = L Lᵀ, so H⁻¹ = UᵀU with U upper. Not cholesky(upper=True): at 4608² with 12 threads that
+    # LAPACK path corrupts the heap on the inference Mac (macOS 27.0.1, torch 2.13; wrong batches, then a segfault).
+    return torch.linalg.cholesky(Hinv).mT.contiguous(), dead
 
 
 def quantize(W, H, bits, group=128, damp=0.01, block=128, scales=None, biases=None, fac=None):
@@ -104,4 +106,7 @@ def convert(W, H, bits, group=128, damp=0.01, refit_passes=1, fac=None):
         S, B = refit(W, Q, H, group, S, B)
         Q, S, B = quantize(W, H, bits, group, damp, scales=S, biases=B, fac=fac)
     S, B = refit(W, Q, H, group, S, B)
-    return Q, S, B, h_error(W, dequant(Q, S, B, group), H)
+    # receipt metric: rows contribute independently, so about 512 evenly spaced rows estimate the ratio at 1/9
+    # the cost of the full (R x K) @ (K x K) product
+    r = slice(None, None, max(1, W.shape[1] // 512))
+    return Q, S, B, h_error(W[:, r], dequant(Q, S, B, group)[:, r], H)
