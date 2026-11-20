@@ -83,6 +83,8 @@ def main() -> None:
     ap.add_argument("--floor-gib", type=float, default=24)
     ap.add_argument("--variant-mlx", type=Path, help="oMLX-layout checkpoint whose experts replace every layer's")
     ap.add_argument("--variant-kortexa", type=Path, help="kortexa EXL3 pack whose decoded experts replace every layer's")
+    ap.add_argument("--fp32-convs", action="store_true",
+                    help="static short convolutions in fp32 (a second correct implementation: the layer gate's floor)")
     a = ap.parse_args()
     if len(a.tokens) != len(a.out):
         ap.error("--tokens and --out need the same number of paths")
@@ -97,7 +99,11 @@ def main() -> None:
     elif a.variant_kortexa:
         from ink2q.exl3 import kortexa_spec
         variant = lambda mod, l: kortexa_spec(a.variant_kortexa, l)  # noqa: E731
-    run_sets(SourceIndex(a.source), sets, Floor(a.floor_gib), variant=variant)
+    with contextlib.ExitStack() as stack:
+        if a.fp32_convs:
+            from ink2q.tflayers import fp32_convs
+            stack.enter_context(fp32_convs())
+        run_sets(SourceIndex(a.source), sets, Floor(a.floor_gib), variant=variant)
 
 
 if __name__ == "__main__":
