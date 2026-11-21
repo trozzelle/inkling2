@@ -1,6 +1,8 @@
 """A TensorFold Inkling 2 EXL3 model directory: the source's non-expert backbone tensors copied byte for byte into
 model-dense.safetensors, its config (quantization naming the EXL3 pack) and tokenizer files, the pack linked as
-experts/ and, when the source has one, the draft head linked as mtp.safetensors."""
+experts/ and, when the source has one, the draft head copied as mtp.safetensors. The draft head is copied, not
+linked: a server started by launchd cannot read a source on an external volume (macOS refuses it), so the model
+directory must not reach back into the source."""
 import argparse
 import json
 import re
@@ -96,12 +98,17 @@ def main_args(argv: list[str] | None = None) -> dict:
     copied = [f for f in TOKENIZER_FILES if (a.source / f).exists()]
     for f in copied:
         shutil.copyfile(a.source / f, a.out / f)
-    for name, target, is_dir in (("experts", a.experts, True), (MTP_FILE, a.source / MTP_FILE, False)):
-        link = a.out / name
-        if link.is_symlink() or link.exists():
-            link.unlink()
-        if target.exists():
-            link.symlink_to(target.resolve(), target_is_directory=is_dir)
+    link = a.out / "experts"
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(a.experts.resolve(), target_is_directory=True)
+    mtp = a.out / MTP_FILE
+    if mtp.is_symlink() or mtp.exists():
+        mtp.unlink()
+    if (a.source / MTP_FILE).exists():
+        tmp = a.out / f".{MTP_FILE}.tmp"
+        shutil.copyfile(a.source / MTP_FILE, tmp)
+        tmp.replace(mtp)
     res = {"tensors": len(names), "dense_bytes": data, "layers": [lo, hi], "tokenizer": copied}
     (a.out / "inkling2-pack.json").write_text(json.dumps(res, indent=1) + "\n")
     print(json.dumps(res))
