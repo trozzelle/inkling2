@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# scripts/studio/tf_p2_gate.sh RUNTIME_ID: runs inside window.sh. The drafted decode gate with the drafter's defaults:
+# scripts/studio/tf_p2_gate.sh RUNTIME_ID: runs inside window.sh. The drafted decode gate with the drafter's defaults
+# (8-bit draft layers, confidence floor 0.7):
 #   0. preflight: every input present and every output directory created before any model load;
 #   1. identity: plain greedy tokens on the bench prompt equal the previous window's; greedy with drafts equals plain on
-#      the bench prompt and one chat prompt; served seeded temperature-0.7 replies with drafts equal the previous
-#      window's --no-drafts replies (the target path is unchanged; only the drafter changed);
+#      the bench prompt and one chat prompt (default) and on the bench prompt with fixed depth (INKLING_DRAFT_CONFIDENCE=off);
+#      served seeded temperature-0.7 replies with drafts equal the previous window's --no-drafts replies (the target path
+#      is unchanged; only the drafter changed);
 #   2. the gate: served pooled decode over the 13 gate prompts, 2 requests each, temperature 0 (>= 55 tok/s);
-#   3. measurements: sampled (temperature 0.7) with drafts, and bf16 draft layers at the same depth for comparison.
+#   3. measurements: sampled (temperature 0.7) with drafts; fixed depth 4; floors 0.6 and 0.8; bf16 draft layers; one
+#      round-timing leg.
 set -euo pipefail
 RID=${1:?runtime id}
 R=$INK2Q_ROOT
@@ -65,6 +68,8 @@ same_tokens $W/greedy-plain-1.log $W/greedy-drafts-1.log || { echo "greedy token
 $TF $PACK greedy $chat 256 2>&1 | tee $W/greedy-plain-2.log | tail -1
 $TF $PACK greedy $chat 256 --drafts 2>&1 | tee $W/greedy-drafts-2.log | tail -1
 same_tokens $W/greedy-plain-2.log $W/greedy-drafts-2.log || { echo "greedy tokens differ with drafts (chat)"; exit 1; }
+INKLING_DRAFT_CONFIDENCE=off $TF $PACK greedy $bench 256 --drafts 2>&1 | tee $W/greedy-fixed-1.log | tail -1
+same_tokens $W/greedy-plain-1.log $W/greedy-fixed-1.log || { echo "greedy tokens differ with fixed-depth drafts (bench)"; exit 1; }
 echo "greedy: drafted equals plain"
 
 serve_up() {  # serve_up LOG [extra serve flags...]
@@ -119,8 +124,19 @@ gate $W/gate.json 2
 gate $W/gate-sampled.json 1 --temperature 0.7 --seed 7
 stop
 
-# 3b. bf16 draft layers at the same depth
-INKLING_DRAFT_BITS=16 serve_up $W/serve-bf16.log
-gate $W/gate-bf16.json 1
-stop
+# 3b. the alternatives; fixed depth 4 gets the gate's 2 requests (the fallback if the floor underdelivers)
+leg() {  # leg NAME REQUESTS ENV...: serve with ENV exported, then the gate's prompts REQUESTS times each
+  local name=$1 n=$2 kv; shift 2
+  for kv in "$@"; do export "$kv"; done
+  serve_up $W/serve-$name.log
+  gate $W/gate-$name.json $n
+  stop
+  for kv in "$@"; do unset "${kv%%=*}"; done
+}
+leg fixed4 2 INKLING_DRAFT_CONFIDENCE=off
+leg floor06 1 INKLING_DRAFT_CONFIDENCE=0.6
+leg floor08 1 INKLING_DRAFT_CONFIDENCE=0.8
+leg bf16 1 INKLING_DRAFT_BITS=16
+leg timing 1 INKLING_ROUND_TIMING=1
+grep -h "round took\|window forwards" $W/serve-timing.log 2>/dev/null | head -4 || true
 echo done
