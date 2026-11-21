@@ -32,6 +32,7 @@ grep -q '"differ": 0' $W/exact.log || { echo "exact: rows differ"; exit 1; }
 
 # 2. taps: study mode of this build for seq 0, then serving taps over the same tokens
 head -1 $P0/ids/index.txt > $OUT/index0.txt
+mkdir -p $OUT/study  # taps mode writes into an existing directory
 $TF $PACK taps $OUT/index0.txt $OUT/study 256 2>&1 | tail -2
 $UV run python - "$OUT/study/seq-00000.tokens.json" "$OUT/ftaps-ids.json" <<'PY'
 import json, sys
