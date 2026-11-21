@@ -1,7 +1,7 @@
 """Per-projection reference for the routed experts of one layer on recorded MoE inputs: w13 outputs and w2 outputs
 in FP64 from the EXL3 pack (dequantized in f32, exact to about 1e-7 for these fp16 products), the bf16 SwiGLU input
 every implementation's w2 is fed, the largest GEMV sums before the output Hadamard (the fp16 range question), and
-the comparison of M1's and Sushi's outputs against it."""
+the comparison of M1's, Sushi's and the decode chain's outputs against it."""
 import argparse
 import json
 from pathlib import Path
@@ -89,18 +89,40 @@ def reference(taps: Path, seq: int, layer: int, rows: int, row0: int, kortexa: P
 
 
 def errors(got: np.ndarray, want: np.ndarray) -> dict:
+    """rel_rms: rms of the difference over rms of want. max_rel: the largest difference over max(|want|, mean |want|).
+    The _big forms leave out the outputs under 1e-3 of want's rms: a sum that cancels to near zero is many bf16 steps
+    off at no cost to the rest, so its steps say little."""
     d = got - want
+    big = np.abs(want) >= 1e-3 * np.sqrt((want ** 2).mean())
     return {"rel_rms": float(np.sqrt((d ** 2).mean() / (want ** 2).mean())),
-            "max_rel": float((np.abs(d) / np.maximum(np.abs(want), np.abs(want).mean())).max())}
+            "max_rel": float((np.abs(d) / np.maximum(np.abs(want), np.abs(want).mean())).max()),
+            "rel_rms_big": float(np.sqrt((d[big] ** 2).mean() / (want[big] ** 2).mean())),
+            "max_rel_big": float((np.abs(d[big]) / np.abs(want[big])).max())}
 
 
-def compare(ref: str, m1: str, sushi: str, kortexa: Path, layer: int, taps: Path, seq: int, rows: int, row0: int) -> dict:
+MOE_WEIGHT = 0.125
+
+
+def moe_rows(ey: np.ndarray, rows: int) -> np.ndarray:
+    """ik_combine's weighted sum of each row's eight per-pick outputs ([rows * 8, N]) at weight MOE_WEIGHT: the products
+    added in f32 in pick order, one bf16 rounding (the product is exact at a power-of-two weight, so each add rounds once,
+    as the kernel's fma does)."""
+    e = ey.reshape(rows, 8, -1).astype(np.float32)
+    acc = np.zeros((rows, e.shape[-1]), np.float32)
+    for k in range(8):
+        acc = acc + e[:, k] * np.float32(MOE_WEIGHT)
+    return to_bf16(acc)
+
+
+def compare(ref: str, m1: str, sushi: str, kortexa: Path, layer: int, taps: Path, seq: int, rows: int, row0: int,
+            xd: str = "") -> dict:
     S = rows * 8
     gu = np.fromfile(f"{ref}.gu.f64").reshape(S, 4608)
     y = np.fromfile(f"{ref}.y.f64").reshape(S, 4608)
+    m1_y = bf16_bits_to_f32(np.fromfile(f"{m1}.y.bin", "<u2")).reshape(S, 4608)
     res = {"bf16_floor": {"w13": errors(to_bf16(gu), gu), "w2": errors(to_bf16(y), y)},
            "m1": {"w13": errors(bf16_bits_to_f32(np.fromfile(f"{m1}.gu.bin", "<u2")).reshape(S, 4608), gu),
-                  "w2": errors(bf16_bits_to_f32(np.fromfile(f"{m1}.y.bin", "<u2")).reshape(S, 4608), y)}}
+                  "w2": errors(m1_y, y)}}
     if sushi:
         eids = load_seq(taps, seq)["eids"][row0 : row0 + rows, layer].reshape(-1)
         g = np.fromfile(f"{sushi}.g.f32", np.float32).reshape(S, 2, 2304).astype(np.float64).sum(1)
@@ -113,6 +135,22 @@ def compare(ref: str, m1: str, sushi: str, kortexa: Path, layer: int, taps: Path
         res["sushi"] = {"w13": errors(out, gu), "w2_proxy": errors(y2, y)}
         # the same outputs at M1's output format: the excess over bf16_floor is what the sums' precision costs
         res["sushi_bf16"] = {"w13": errors(to_bf16(out), gu), "w2_proxy": errors(to_bf16(y2), y)}
+    if xd:
+        # The taps carry no router weights: every pick weighs 1/8, in the reference and in each path's weighted sum.
+        moe = (y.reshape(rows, 8, -1) * MOE_WEIGHT).sum(1)
+        read = lambda name, shape: bf16_bits_to_f32(np.fromfile(f"{xd}.{name}.bin", "<u2")).reshape(shape).astype(np.float64)
+        res["bf16_floor"]["moe"] = errors(to_bf16(moe), moe)
+        res["m1"]["moe"] = errors(moe_rows(m1_y, rows), moe)
+        # w2 and moe on the act the reference gives every path (as m1's), then on each path's own act
+        res["xd"] = {"w13": errors(read("gu", (S, 4608)), gu), "w2": errors(read("y", (S, 4608)), y),
+                     "moe": errors(read("moe", (rows, 4608)), moe),
+                     "w2_own_act": errors(read("y_own", (S, 4608)), y), "moe_own_act": errors(read("moe_own", (rows, 4608)), moe)}
+        res["m1"]["w2_own_act"] = errors(read("proj_y_own", (S, 4608)), y)
+        res["m1"]["moe_own_act"] = errors(read("proj_moe_own", (rows, 4608)), moe)
+        parts = ("w13", "w2", "moe", "w2_own_act", "moe_own_act")
+        floor = lambda k: res["bf16_floor"][k.removesuffix("_own_act")]["rel_rms"]
+        res["xd_over_m1"] = {k: res["xd"][k]["rel_rms"] / res["m1"][k]["rel_rms"] for k in parts}
+        res["over_floor"] = {n: {k: res[n][k]["rel_rms"] / floor(k) - 1 for k in parts} for n in ("m1", "xd")}
     return res
 
 
@@ -131,11 +169,12 @@ def main(argv=None) -> None:
     for k in ("--ref", "--m1"):
         sub.choices["compare"].add_argument(k, required=True)
     sub.choices["compare"].add_argument("--sushi", default="")
+    sub.choices["compare"].add_argument("--xd", default="", help="prefix of the decode chain's `tf-inkling-bench xd-dump` files")
     a = ap.parse_args(argv)
     if a.cmd == "ref":
         print(json.dumps(reference(a.taps, a.seq, a.layer, a.rows, a.row0, a.kortexa, Path(a.out))))
     else:
-        print(json.dumps(compare(a.ref, a.m1, a.sushi, a.kortexa, a.layer, a.taps, a.seq, a.rows, a.row0), indent=1))
+        print(json.dumps(compare(a.ref, a.m1, a.sushi, a.kortexa, a.layer, a.taps, a.seq, a.rows, a.row0, a.xd), indent=1))
 
 
 if __name__ == "__main__":
