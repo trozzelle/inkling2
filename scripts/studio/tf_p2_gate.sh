@@ -108,7 +108,7 @@ trap '[ -n "$SERVER" ] && { kill $SERVER 2>/dev/null; wait $SERVER 2>/dev/null; 
 
 # drafts with the drafter's defaults (no INKLING_DRAFT_* set)
 serve_up $W/serve-default.log
-grep -h "draft head\|window forwards" $W/serve-default.log | head -3
+grep -h "draft head\|window forwards" $W/serve-default.log 2>/dev/null | head -3 || true
 seeded $W/seeded-drafts.jsonl
 cmp $W1/seeded-plain.jsonl $W/seeded-drafts.jsonl || { echo "seeded sampled replies differ from --no-drafts"; exit 1; }
 echo "seeded: drafted equals plain"
