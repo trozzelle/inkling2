@@ -1,5 +1,5 @@
-"""E3: small-table decode GEMVs (IQ3_XXS-style lattice, QTIP 3INST-style trellis) against affine 3-bit gather_qmm,
-chained 48 calls per evaluation as in G0/E1, at the real expert shapes."""
+"""Small-table decode GEMVs (IQ3_XXS-style lattice, QTIP 3INST-style trellis) against affine 3-bit gather_qmm,
+chained 48 calls per evaluation as in the R13+8 and affine byte-scaling benchmarks, at the real expert shapes."""
 import json
 import platform
 import subprocess

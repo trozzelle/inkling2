@@ -1,9 +1,9 @@
-"""E5 layer choice from W2's profile, restricted to layers where single-layer KL tracks perturbation size.
+"""GPTQ layer choice from the per-layer profile, restricted to layers where single-layer KL tracks perturbation size.
 
-W2d showed that below about layer 30 any single-layer perturbation (RTN 8 included) grows into a KL floor of
-0.005-0.012, so single-layer KL there does not measure quantization quality. Among layers >= FIRST: the oQe
-2-bit layer with the largest KL, the oQe 3-bit layer with the median KL, and the layer in 42-47 with the largest KL
-(each distinct). Prints the comma-separated layers."""
+The profile diagnostics showed that below about layer 30 any single-layer perturbation (RTN 8 included) grows into a
+KL floor of 0.005-0.012, so single-layer KL there does not measure quantization quality. Among layers >= FIRST: the
+oQe 2-bit layer with the largest KL, the oQe 3-bit layer with the median KL, and the layer in 42-47 with the largest
+KL (each distinct). Prints the comma-separated layers."""
 import json
 import sys
 from pathlib import Path

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/studio/tf_p1_gate.sh: runs inside window.sh. The decode path on the full model: windows against one-row
+# scripts/studio/tf_decode_check.sh: runs inside window.sh. The decode path on the full model: windows against one-row
 # steps (stop on any difference), greedy decode speed after the bench prompt and after an 8,192-token prompt, and the
 # per-class profile of 48-layer decode steps at 1 and 6 rows.
 set -euo pipefail

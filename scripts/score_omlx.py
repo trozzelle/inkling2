@@ -1,4 +1,4 @@
-"""Baseline B: teacher-forced score of an oMLX-loaded Inkling 2 build against the MXFP8 teacher's final states.
+"""Teacher-forced score of an oMLX-loaded Inkling 2 build against the MXFP8 teacher's final states.
 
 Runs in the oMLX venv with PYTHONPATH set to this repo (ink2q.score, ink2q.source, ink2q.tokens and
 ink2q.memguard import no mlx-lm). At the pinned oMLX commit 624cff0e, `model.model(ids)` returns the final

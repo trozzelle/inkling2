@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/studio/tf_taps.sh: runs inside window.sh. The M1 forward with taps on the Phase 0 prompt set: the first
+# scripts/studio/tf_taps.sh: runs inside window.sh. The full-model forward with taps on the benchmark prompt set: the first
 # prompt, its tap-48 alignment check (stop on failure), then the rest; 256 greedy tokens each.
 set -euo pipefail
 . "$(dirname "$0")/env.sh" && need UV || exit 1

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# scripts/studio/exl3q.sh: runs inside window.sh. The kortexa EXL3 2.59 bpw experts, decoded to bf16, in the ink2q
-# forward with source non-experts (as B' does for oQe), on the held-out, agentic and long sets; paired comparisons
-# against B' and against served oQe.
+# scripts/studio/kortexa_exl3_fidelity.sh: runs inside window.sh. The kortexa EXL3 2.59 bpw experts, decoded to bf16, in the ink2q
+# forward with source non-experts (as for oQe), on the held-out, agentic and long sets; paired comparisons
+# against oQe in the same forward and against served oQe.
 set -euo pipefail
 . "$(dirname "$0")/env.sh" && need UV || exit 1
 R=$INK2Q_ROOT

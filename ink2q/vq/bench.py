@@ -1,4 +1,4 @@
-"""G0: R13+8 decode GEMV against affine 3-bit g128 gather_qmm at the real Inkling 2 expert shapes."""
+"""Decode GEMV benchmark: R13+8 against affine 3-bit g128 gather_qmm at the real Inkling 2 expert shapes."""
 import argparse
 import json
 import platform

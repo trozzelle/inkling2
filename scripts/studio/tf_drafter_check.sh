@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/studio/tf_p2_check.sh RUNTIME_ID: runs inside window.sh. The drafter on the full model:
+# scripts/studio/tf_drafter_check.sh RUNTIME_ID: runs inside window.sh. The drafter on the full model:
 #   1. windows against one-row steps (stop on any difference);
 #   2. serving taps against the study taps of the same build (every row) and against the earlier recorded taps
 #      (prompt rows only, which take the unchanged prompt path);
@@ -13,7 +13,7 @@ RID=${1:?runtime id}
 R=$INK2Q_ROOT
 PACK=$TF_PACK
 TF=$TF_FORK/zig-out/bin/tf-inkling-run
-P0=$INK2Q_WORK/tf-m2p0
+PROMPTS=$INK2Q_WORK/tf-m2p0
 OUT=$INK2Q_WORK/tf-m2p2/w1
 W=$R/reports/tf-m2p2/w1
 MSG=$INK2Q_WORK/tf-m2p2/gate-messages.json
@@ -30,7 +30,7 @@ $TF $PACK exact $R/reports/tf-m1/layers/ids.json 448 2>&1 | tee $W/exact.log
 grep -q '"differ": 0' $W/exact.log || { echo "exact: rows differ"; exit 1; }
 
 # 2. taps: study mode of this build for seq 0, then serving taps over the same tokens
-head -1 $P0/ids/index.txt > $OUT/index0.txt
+head -1 $PROMPTS/ids/index.txt > $OUT/index0.txt
 mkdir -p $OUT/study  # taps mode writes into an existing directory
 $TF $PACK taps $OUT/index0.txt $OUT/study 256 2>&1 | tail -2
 $UV run python - "$OUT/study/seq-00000.tokens.json" "$OUT/ftaps-ids.json" <<'PY'
@@ -39,7 +39,7 @@ t = json.load(open(sys.argv[1])); json.dump([int(x) for x in t["tokens"]], open(
 PY
 L=$($UV run python -c "import json; print(json.load(open('$OUT/study/seq-00000.tokens.json'))['prompt'])")
 $TF $PACK ftaps $OUT/ftaps-ids.json $OUT/ftaps.bin $L 1 2>&1 | tail -1
-$UV run python - "$OUT/ftaps.bin" "$OUT/study/seq-00000.taps.bin" "$P0/taps/seq-00000.taps.bin" "$L" <<'PY' | tee $W/taps-check.json
+$UV run python - "$OUT/ftaps.bin" "$OUT/study/seq-00000.taps.bin" "$PROMPTS/taps/seq-00000.taps.bin" "$L" <<'PY' | tee $W/taps-check.json
 import json, sys, numpy as np
 H = 4608
 f, s, p0 = (np.fromfile(x, "<u2").reshape(-1, 8, H) for x in sys.argv[1:4]); L = int(sys.argv[4])
@@ -55,7 +55,7 @@ PY
 
 # 3. greedy with drafts equals plain greedy
 for i in 1 2 3 4; do
-  ids=$(sed -n "${i}p" $P0/ids/index.txt)
+  ids=$(sed -n "${i}p" $PROMPTS/ids/index.txt)
   $TF $PACK greedy $ids 256 2>&1 | tee $W/greedy-plain-$i.log | tail -1
   INKLING_DRAFT_DEPTH=5 $TF $PACK greedy $ids 256 --drafts 2>&1 | tee $W/greedy-drafts-$i.log | tail -2
   $UV run python - "$W/greedy-plain-$i.log" "$W/greedy-drafts-$i.log" <<'PY' || { echo "greedy tokens differ with drafts (prompt $i)"; exit 1; }

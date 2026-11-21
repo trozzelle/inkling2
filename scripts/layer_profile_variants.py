@@ -1,4 +1,4 @@
-"""W2 profile variants: oQe experts, RTN 2/2 and RTN 4/4 at one layer each, plus NVFP4 on layers 0-39."""
+"""Layer-profile variants: oQe experts, RTN 2/2 and RTN 4/4 at one layer each, plus NVFP4 on layers 0-39."""
 import json
 import sys
 

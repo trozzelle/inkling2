@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/studio/tf_p1_serve.sh RUNTIME_ID [OUT_SUBDIR] [REQUESTS] [SAMPLED]: runs inside window.sh. First the build
+# scripts/studio/tf_decode_serve.sh RUNTIME_ID [OUT_SUBDIR] [REQUESTS] [SAMPLED]: runs inside window.sh. First the build
 # under test must reproduce the decode path's earlier outputs byte for byte (a 48-layer window-mode dump and greedy
 # tokens after the bench prompt and after an 8,192-token prompt); any difference stops the job. Then the installed
 # runtime serves the model on a loopback port and `studio bench` measures one-stream decode at <= 1k context and after

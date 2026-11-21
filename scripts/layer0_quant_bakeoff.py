@@ -1,4 +1,4 @@
-"""E2: layer-0 bake-off — RTN vs oQe vs FP64 GPTQ-affine (H variants) on held-out MoE output error."""
+"""Layer-0 bake-off — RTN vs oQe vs FP64 GPTQ-affine (H variants) on held-out MoE output error."""
 import argparse
 import itertools
 import json

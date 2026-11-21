@@ -1,5 +1,5 @@
-"""E5 summary: GPTQ gain g(b) = KL_gptq(b/b) / KL_rtn(b/b) and the w13 share of a layer's sensitivity, per layer and
-as the median the Plan 3 allocator reads; also the RTN 3-bit check of the allocator's geometric interpolation."""
+"""GPTQ summary: GPTQ gain g(b) = KL_gptq(b/b) / KL_rtn(b/b) and the w13 share of a layer's sensitivity, per layer and
+as the median the bit allocator reads; also the RTN 3-bit check of the allocator's geometric interpolation."""
 import json
 import statistics
 import sys

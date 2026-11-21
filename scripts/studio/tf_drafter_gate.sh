@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/studio/tf_p2_gate.sh RUNTIME_ID: runs inside window.sh. The drafted decode gate with the drafter's defaults
+# scripts/studio/tf_drafter_gate.sh RUNTIME_ID: runs inside window.sh. The drafted decode gate with the drafter's defaults
 # (8-bit draft layers, confidence floor 0.7):
 #   0. preflight: every input present and every output directory created before any model load;
 #   1. identity: plain greedy tokens on the bench prompt equal the previous window's; greedy with drafts equals plain on
@@ -15,20 +15,20 @@ RID=${1:?runtime id}
 R=$INK2Q_ROOT
 PACK=$TF_PACK
 TF=$TF_FORK/zig-out/bin/tf-inkling-run
-P0=$INK2Q_WORK/tf-m2p0
-W1=$R/reports/tf-m2p2/w1
+PROMPTS=$INK2Q_WORK/tf-m2p0
+PLAIN=$R/reports/tf-m2p2/w1
 W=$R/reports/tf-m2p2/w2
 MSG=$INK2Q_WORK/tf-m2p2/gate-messages.json
 PORT=8199
 
 # 0. preflight
 mkdir -p $W
-for f in "$UV" "$TF" "$MSG" "$P0/ids/index.txt" "$PACK/mtp.safetensors" "$W1/greedy-plain-1.log" "$W1/seeded-plain.jsonl" \
-         "$W1/gate-plain.json"; do
+for f in "$UV" "$TF" "$MSG" "$PROMPTS/ids/index.txt" "$PACK/mtp.safetensors" "$PLAIN/greedy-plain-1.log" "$PLAIN/seeded-plain.jsonl" \
+         "$PLAIN/gate-plain.json"; do
   [ -e "$f" ] || { echo "preflight: missing $f"; exit 1; }
 done
 for i in 1 2; do
-  ids=$(sed -n "${i}p" $P0/ids/index.txt); [ -e "$ids" ] || { echo "preflight: missing ids file $ids"; exit 1; }
+  ids=$(sed -n "${i}p" $PROMPTS/ids/index.txt); [ -e "$ids" ] || { echo "preflight: missing ids file $ids"; exit 1; }
 done
 BIN=$(find $STUDIO_HOME/runtimes/tensorfold -maxdepth 7 -type f -name tensorfold-native -path "*$RID*" | head -1)
 [ -x "$BIN" ] || { echo "preflight: no tensorfold-native server for runtime $RID"; exit 1; }
@@ -59,9 +59,9 @@ PY
 }
 
 # 1. identity
-bench=$(sed -n 1p $P0/ids/index.txt); chat=$(sed -n 2p $P0/ids/index.txt)
+bench=$(sed -n 1p $PROMPTS/ids/index.txt); chat=$(sed -n 2p $PROMPTS/ids/index.txt)
 $TF $PACK greedy $bench 256 2>&1 | tee $W/greedy-plain-1.log | tail -1
-same_tokens $W1/greedy-plain-1.log $W/greedy-plain-1.log || { echo "plain greedy tokens changed since the previous window"; exit 1; }
+same_tokens $PLAIN/greedy-plain-1.log $W/greedy-plain-1.log || { echo "plain greedy tokens changed since the previous window"; exit 1; }
 $TF $PACK greedy $bench 256 --drafts 2>&1 | tee $W/greedy-drafts-1.log | tail -1
 same_tokens $W/greedy-plain-1.log $W/greedy-drafts-1.log || { echo "greedy tokens differ with drafts (bench)"; exit 1; }
 $TF $PACK greedy $chat 256 2>&1 | tee $W/greedy-plain-2.log | tail -1
@@ -114,7 +114,7 @@ trap '[ -n "$SERVER" ] && { kill $SERVER 2>/dev/null; wait $SERVER 2>/dev/null; 
 serve_up $W/serve-default.log
 grep -h "draft head\|window forwards" $W/serve-default.log 2>/dev/null | head -3 || true
 seeded $W/seeded-drafts.jsonl
-cmp $W1/seeded-plain.jsonl $W/seeded-drafts.jsonl || { echo "seeded sampled replies differ from --no-drafts"; exit 1; }
+cmp $PLAIN/seeded-plain.jsonl $W/seeded-drafts.jsonl || { echo "seeded sampled replies differ from --no-drafts"; exit 1; }
 echo "seeded: drafted equals plain"
 
 # 2. the gate

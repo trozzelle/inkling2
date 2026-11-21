@@ -1,6 +1,7 @@
 """Offline DSpark acceptance on TensorFold taps. oMLX's own Inkling2DSparkModel (omlx 624cff0e) proposes a 7-token
 block at every generated row of each greedy run from the recorded taps, with the target's bf16 embed, embed norm and
-unembed. Writes proposals, the first rows' step logits (the Phase 2 reference) and acceptance summaries."""
+unembed. Writes proposals, the first rows' step logits (the reference the drafter check compares against) and
+acceptance summaries."""
 import argparse
 import json
 from pathlib import Path

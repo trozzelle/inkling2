@@ -1,5 +1,6 @@
-"""W2 report (markdown to stdout) from reports/w2: B' per set with CIs, KL against position, B against B', the
-per-layer profile table, the RTN linearity check, the NVFP4 yardstick and the layer 40-47 ranking."""
+"""Layer-profile report (markdown to stdout) from reports/w2: the fair baseline per set with CIs, KL against position,
+served oQe against it, the per-layer profile table, the RTN linearity check, the NVFP4 yardstick and the layer 40-47
+ranking."""
 import json
 import sys
 from pathlib import Path
@@ -33,8 +34,8 @@ def kl_by_position(npz: Path, rows: list[dict], domain: str | None) -> list[tupl
 
 
 def main(w2: Path, oqe_config: Path) -> None:
-    out = ["## W2: fair baseline B', per-layer profile, NVFP4 yardstick", ""]
-    out += ["### B' (oQe experts, source non-experts, ink2q forward)", "",
+    out = ["## Fair baseline, per-layer profile, NVFP4 yardstick", ""]
+    out += ["### Fair baseline (oQe experts, source non-experts, ink2q forward)", "",
             "| Set | Slice | KL (95% CI) | top-1 (95% CI) | positions |", "|---|---|---|---|---|"]
     for s in ("heldout", "agentic", "long"):
         ev = json.loads((w2 / f"bprime-{s}.json").read_text())
@@ -55,8 +56,8 @@ def main(w2: Path, oqe_config: Path) -> None:
         for b, v, n in kl_by_position(w2 / f"bprime-{s}.npz", rows, dom):
             out.append(f"| {s}{'/' + dom if dom else ''} | {b} | {v:.4f} | {n} |")
     cmp = json.loads((w2 / "b-vs-bprime.json").read_text())["slices"]
-    out += ["", "B (served, oQe's 8-bit non-experts) against B' (source non-experts), held-out:", "",
-            "| Slice | metric | B | B' | B'−B (95% CI) |", "|---|---|---|---|---|"]
+    out += ["", "Served oQe (8-bit non-experts) against the fair baseline (source non-experts), held-out:", "",
+            "| Slice | metric | served | fair | fair−served (95% CI) |", "|---|---|---|---|---|"]
     for name, d in cmp.items():
         for k in ("kl", "top1"):
             r = d[k]

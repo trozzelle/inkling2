@@ -1,4 +1,4 @@
-"""E1: does affine gather_qmm time track bytes? Chained calls at bits 2/3/4, T in {1, 8}, real expert shapes."""
+"""Does affine gather_qmm time track bytes? Chained calls at bits 2/3/4, T in {1, 8}, real expert shapes."""
 import json
 import sys
 

@@ -1,5 +1,5 @@
-"""Diagnostic: stream the E5 calibration subset to one layer and save raw Grams for a few experts plus the all-token
-Gram (from which the w13 prior is built), so GPTQ on that layer can be replayed offline."""
+"""Diagnostic: stream the 1.0M-token calibration subset to one layer and save raw Grams for a few experts plus the
+all-token Gram (from which the w13 prior is built), so GPTQ on that layer can be replayed offline."""
 import argparse
 import json
 from pathlib import Path

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/studio/tf_p1_fidelity.sh: runs inside window.sh. The fidelity gates with every row past the first 16 fed in
+# scripts/studio/tf_decode_fidelity.sh: runs inside window.sh. The fidelity gates with every row past the first 16 fed in
 # 16-row windows through the decode path: the layer gate over 48 layers against the existing reference and floor, then
 # TensorFold's finals over the full held-out set scored against the teacher and compared with ink2q's kortexa result.
 set -uo pipefail

@@ -1,4 +1,4 @@
-"""W2d diagnostic variants: a null swap (harness offset), RTN 8 vs RTN 4 at single layers (chaotic floor), and
+"""Layer-profile diagnostic variants: a null swap (harness offset), RTN 8 vs RTN 4 at single layers (chaotic floor), and
 all-oQe with one layer restored (marginal sensitivity at the oQe operating point)."""
 import json
 import sys

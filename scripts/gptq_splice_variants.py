@@ -1,4 +1,4 @@
-"""E5: full-layer statistics on the 1.0M-token calibration subset, FP64 GPTQ at 2/3/4 bits on both projections of
+"""Full-layer statistics on the 1.0M-token calibration subset, FP64 GPTQ at 2/3/4 bits on both projections of
 three chosen layers, candidate directories and the splice variants (GPTQ, RTN and oQe controls)."""
 import argparse
 import json

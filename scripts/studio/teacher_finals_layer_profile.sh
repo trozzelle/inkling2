@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/studio/w2.sh: runs inside window.sh. Teacher finals for the session sets, the fair oQe baseline B'
+# scripts/studio/teacher_finals_layer_profile.sh: runs inside window.sh. Teacher finals for the session sets, the fair oQe baseline
 # (oQe experts, source non-experts, ink2q forward), the per-layer profile and the NVFP4 yardstick.
 set -euo pipefail
 . "$(dirname "$0")/env.sh" && need UV || exit 1
@@ -18,14 +18,14 @@ SAMPLER=$!
 trap 'kill $SAMPLER 2>/dev/null' EXIT
 step() { echo "$(date '+%F %T') $*"; }
 
-# 1. teacher finals for the agentic and long session sets (held-out teacher from W1 is reused)
+# 1. teacher finals for the agentic and long session sets (held-out teacher from omlx_teacher_baseline.sh is reused)
 if [ ! -f $R/teacher/long/done.json ]; then
   step teacher
   $UV run python -m ink2q.teacher --source $R/source --tokens $S/agentic.safetensors $S/long.safetensors \
     --out $R/teacher/agentic $R/teacher/long
 fi
 
-# 2. B': oQe experts installed in the ink2q forward, all three sets in one pass
+# 2. fair baseline: oQe experts installed in the ink2q forward, all three sets in one pass
 if [ ! -f $R/bprime/long/done.json ]; then
   step bprime
   $UV run python -m ink2q.teacher --source $R/source --variant-mlx $OQE \
@@ -33,7 +33,7 @@ if [ ! -f $R/bprime/long/done.json ]; then
     --out $R/bprime/heldout $R/bprime/agentic $R/bprime/long
 fi
 
-# 3. score B' per set with per-position records; compare served B against B' on the held-out set
+# 3. score the fair baseline per set with per-position records; compare served oQe against the fair baseline on the held-out set
 step evaluate-bprime
 $UV run python -m ink2q.evaluate --source $R/source --tokens $D/heldout.safetensors \
   --manifest $D/heldout_manifest.json --teacher $R/teacher/heldout --variant $R/bprime/heldout \
@@ -47,7 +47,7 @@ $UV run python -m ink2q.compare $R/reports/oqe-heldout.json $W/bprime-heldout.js
 
 # 4. per-layer profile and NVFP4 yardstick through the splice harness (held-out, 512 tokens per sequence)
 step profile
-$UV run python scripts/w2_variants.py $OQE > $W/variants.json
+$UV run python scripts/layer_profile_variants.py $OQE > $W/variants.json
 $UV run python -m ink2q.harness --source $R/source --tokens $D/heldout.safetensors \
   --manifest $D/heldout_manifest.json --variants $W/variants.json --out $W/profile --max-per-seq 512 --budget-gib 110
 step evaluate-profile
