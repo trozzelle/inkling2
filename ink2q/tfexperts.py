@@ -98,7 +98,8 @@ def compare(ref: str, m1: str, sushi: str, kortexa: Path, layer: int, taps: Path
     S = rows * 8
     gu = np.fromfile(f"{ref}.gu.f64").reshape(S, 4608)
     y = np.fromfile(f"{ref}.y.f64").reshape(S, 4608)
-    res = {"m1": {"w13": errors(bf16_bits_to_f32(np.fromfile(f"{m1}.gu.bin", "<u2")).reshape(S, 4608), gu),
+    res = {"bf16_floor": {"w13": errors(to_bf16(gu), gu), "w2": errors(to_bf16(y), y)},
+           "m1": {"w13": errors(bf16_bits_to_f32(np.fromfile(f"{m1}.gu.bin", "<u2")).reshape(S, 4608), gu),
                   "w2": errors(bf16_bits_to_f32(np.fromfile(f"{m1}.y.bin", "<u2")).reshape(S, 4608), y)}}
     if sushi:
         eids = load_seq(taps, seq)["eids"][row0 : row0 + rows, layer].reshape(-1)
@@ -108,8 +109,10 @@ def compare(ref: str, m1: str, sushi: str, kortexa: Path, layer: int, taps: Path
         for j, e in enumerate(eids):
             svh13 = load_expert(kortexa, layer, int(e))[1]
             out[j] = np.concatenate([fwht(g[j]), fwht(u[j])]) * svh13
-        res["sushi"] = {"w13": errors(out, gu),
-                        "w2_proxy": errors(np.fromfile(f"{sushi}.y.f16", np.float16).reshape(S, 4608).astype(np.float64), y)}
+        y2 = np.fromfile(f"{sushi}.y.f16", np.float16).reshape(S, 4608).astype(np.float64)
+        res["sushi"] = {"w13": errors(out, gu), "w2_proxy": errors(y2, y)}
+        # the same outputs at M1's output format: the excess over bf16_floor is what the sums' precision costs
+        res["sushi_bf16"] = {"w13": errors(to_bf16(out), gu), "w2_proxy": errors(to_bf16(y2), y)}
     return res
 
 
