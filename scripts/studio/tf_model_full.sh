@@ -3,20 +3,19 @@
 # TensorFold's teacher-forced finals, and ink2q itself with fp32 static convolutions (a second correct implementation,
 # the layer gate's floor) as the KL noise reference. Then a greedy decode for speed.
 set -uo pipefail
+. "$(dirname "$0")/env.sh" && need UV || exit 1
 R=$INK2Q_ROOT
 D=$R/data
-REPO=$STUDIO_REPO
-UV=$UV
 K=$INK2Q_WORK/kortexa
-PACK=$INK2Q_WORK/tf-pack
-TF=$INK2Q_WORK/tf-fork/zig-out/bin/tf-inkling-run
+PACK=$TF_PACK
+TF=$TF_FORK/zig-out/bin/tf-inkling-run
 OUT=$INK2Q_WORK/tf-m1
 W=$R/reports/tf-m1
 REF=$R/reports/exl3q/kortexa-heldout.json
 set -e
 mkdir -p $OUT $W
-cd "$REPO"
-cp $INK2Q_WORK/tf-fork/REVISION $W/tf-revision-full.txt
+cd "$STUDIO_REPO"
+cp $TF_FORK/REVISION $W/tf-revision-full.txt
 # 1. TensorFold on the full held-out set
 $UV run python -m ink2q.tfio tokens --tokens $D/heldout.safetensors --out $OUT/full/ids
 mkdir -p $OUT/full/tf-bin

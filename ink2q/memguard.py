@@ -1,4 +1,4 @@
-"""MLX memory limits and a free-memory floor (the 2026-10-28 Studio watchdog panic left 11 MB free)."""
+"""MLX memory limits and a free-memory floor (a GPU watchdog panic left 11 MB free)."""
 import json
 import re
 import subprocess

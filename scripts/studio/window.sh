@@ -2,12 +2,13 @@
 # scripts/studio/window.sh OUTDIR RESTORE_MODEL -- CMD [ARGS...]
 # Downtime window: freeze the router, stop its engines, run CMD, always restore. RESTORE_MODEL may be "none".
 set -uo pipefail
+. "$(dirname "$0")/env.sh" && need STUDIO_HOME || exit 1
 [ $# -ge 4 ] && [ "$3" = "--" ] || { echo "usage: window.sh OUTDIR RESTORE_MODEL -- CMD..." >&2; exit 2; }
 OUT=$1; RESTORE=$2; shift 3
 mkdir -p "$OUT"
 STUDIO=$STUDIO_HOME/bin/studio
 log() { echo "$(date '+%F %T') $*"; }
-ROUTER_PID=$(pgrep -f 'llama-swap -config $STUDIO_HOME/config/llama-swap.yaml' | head -1)
+ROUTER_PID=$(pgrep -f "llama-swap -config $STUDIO_HOME/config/llama-swap.yaml" | head -1)
 [ -n "$ROUTER_PID" ] || { log "no router; refusing (nothing to restore through)"; exit 1; }
 descendants() { local p; for p in $(pgrep -P "$1"); do echo "$p"; descendants "$p"; done; }
 restore() {

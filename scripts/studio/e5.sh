@@ -2,14 +2,13 @@
 # scripts/studio/e5.sh: runs inside window.sh. Full-layer statistics and FP64 GPTQ for three layers chosen from W2,
 # then the splice of GPTQ candidates against RTN and oQe controls; writes gain.json and proj_ratio.json.
 set -euo pipefail
+. "$(dirname "$0")/env.sh" && need UV || exit 1
 R=$INK2Q_ROOT
-REPO=$STUDIO_REPO
-UV=$UV
 D=$R/data
 OQE=$R/models/Inkling-2-Small-oQe-3.07bpw-MLX
 E=$R/reports/e5
 WORK=$INK2Q_WORK/e5
-cd "$REPO"
+cd "$STUDIO_REPO"
 mkdir -p $E $WORK
 ( while true; do
     echo "$(date +%T) $(vm_stat | awk '/free|wired|active|inactive|compressor/ {gsub(/\./,"",$NF); printf "%s=%.1f ", $2, $NF*16384/2^30}') swap=$(sysctl -n vm.swapusage | awk '{print $6}')"

@@ -8,21 +8,20 @@
 #   5. served decode rates over the gate prompts: plain (--no-drafts) and drafts at depths 3 to 7.
 # Identity legs (1-4) stop the job on a difference; measurement legs record and continue.
 set -euo pipefail
+. "$(dirname "$0")/env.sh" && need UV STUDIO_HOME || exit 1
 RID=${1:?runtime id}
 R=$INK2Q_ROOT
-REPO=$STUDIO_REPO
-UV=$UV
-PACK=$INK2Q_WORK/tf-pack
-TF=$INK2Q_WORK/tf-fork/zig-out/bin/tf-inkling-run
+PACK=$TF_PACK
+TF=$TF_FORK/zig-out/bin/tf-inkling-run
 P0=$INK2Q_WORK/tf-m2p0
 OUT=$INK2Q_WORK/tf-m2p2/w1
 W=$R/reports/tf-m2p2/w1
 MSG=$INK2Q_WORK/tf-m2p2/gate-messages.json
 PORT=8199
 mkdir -p $OUT $W
-cd "$REPO"
-cp $INK2Q_WORK/tf-fork/REVISION $W/tf-revision.txt
-read -r REV DIRTY < $INK2Q_WORK/tf-fork/REVISION
+cd "$STUDIO_REPO"
+cp $TF_FORK/REVISION $W/tf-revision.txt
+read -r REV DIRTY < $TF_FORK/REVISION
 [ "$DIRTY" = "dirty=0" ] || { echo "tf-fork build is from a dirty tree ($DIRTY)"; exit 1; }
 case "$RID" in *"${REV:0:12}"*) ;; *) echo "runtime $RID is not commit ${REV:0:12}"; exit 1 ;; esac
 

@@ -2,12 +2,12 @@
 # scripts/studio/w1b.sh: runs inside window.sh. The oQe half of W1 (baseline B) with system memory sampled
 # every 5 s, for when the teacher half already succeeded.
 set -euo pipefail
+. "$(dirname "$0")/env.sh" && need STUDIO_HOME OMLX_BIN || exit 1
 R=$INK2Q_ROOT
-REPO=$STUDIO_REPO
 D=$R/data
 OQE=$R/models/Inkling-2-Small-oQe-3.07bpw-MLX
 OMLX=$OMLX_BIN
-cd "$REPO"
+cd "$STUDIO_REPO"
 ( while true; do
     echo "$(date +%T) $(vm_stat | awk '/free|wired|active|inactive|compressor/ {gsub(/\./,"",$NF); printf "%s=%.1f ", $2, $NF*16384/2^30}') swap=$(sysctl -n vm.swapusage | awk '{print $6}')"
     sleep 5
@@ -15,7 +15,7 @@ cd "$REPO"
 SAMPLER=$!
 trap 'kill $SAMPLER 2>/dev/null' EXIT
 if [ ! -s $R/reports/oqe-heldout.json ]; then
-  PYTHONPATH=$REPO $OMLX/python scripts/score_omlx.py --model $OQE --source $R/source \
+  PYTHONPATH=$STUDIO_REPO $OMLX/python scripts/score_omlx.py --model $OQE --source $R/source \
     --tokens $D/heldout.safetensors --manifest $D/heldout_manifest.json --teacher $R/teacher/heldout \
     --out $R/reports/oqe-heldout.json
 fi

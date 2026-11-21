@@ -2,17 +2,16 @@
 # scripts/studio/tf_model_gate.sh: runs inside window.sh. TensorFold teacher-forced finals on the held-out set at 512
 # tokens a sequence and in full, scored against the MXFP8 teacher and compared with ink2q's kortexa result; greedy decode.
 set -euo pipefail
+. "$(dirname "$0")/env.sh" && need UV || exit 1
 R=$INK2Q_ROOT
 D=$R/data
-REPO=$STUDIO_REPO
-UV=$UV
-PACK=$INK2Q_WORK/tf-pack
-TF=$INK2Q_WORK/tf-fork/zig-out/bin/tf-inkling-run
+PACK=$TF_PACK
+TF=$TF_FORK/zig-out/bin/tf-inkling-run
 OUT=$INK2Q_WORK/tf-m1
 W=$R/reports/tf-m1
 mkdir -p $OUT $W
-cd "$REPO"
-cp $INK2Q_WORK/tf-fork/REVISION $W/tf-revision.txt
+cd "$STUDIO_REPO"
+cp $TF_FORK/REVISION $W/tf-revision.txt
 # 1. the subset: every held-out sequence's first 512 tokens; teacher and ink2q finals sliced (the model is causal)
 $UV run python -m ink2q.tfio subset --tokens $D/heldout.safetensors --manifest $D/heldout_manifest.json --max-tokens 512 \
   --finals teacher=$R/teacher/heldout ink2q=$INK2Q_WORK/kortexa-eval/heldout --out $OUT/sub

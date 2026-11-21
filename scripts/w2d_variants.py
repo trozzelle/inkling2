@@ -3,7 +3,9 @@ all-oQe with one layer restored (marginal sensitivity at the oQe operating point
 import json
 import sys
 
-OQE = "$INK2Q_ROOT/models/Inkling-2-Small-oQe-3.07bpw-MLX"
+from ink2q.config import Paths
+
+OQE = str(Paths.from_env().root / "models" / "Inkling-2-Small-oQe-3.07bpw-MLX")
 PROBE = [0, 4, 12, 20, 30, 40, 47]
 LOO = [0, 4, 6, 12, 18, 24, 30, 36, 42, 46]
 

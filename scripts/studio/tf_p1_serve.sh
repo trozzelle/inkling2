@@ -8,24 +8,25 @@
 # With AB=1, the server is restarted with INKLING_WARM_WAIT=0, then INKLING_FIRST_CHUNK=0, for shorter benches, and
 # finally with INKLING_ROUND_TIMING=1 for two greedy and two sampled replies (the gate numbers above run without it).
 set -euo pipefail
+. "$(dirname "$0")/env.sh" && need STUDIO_HOME || exit 1
 RID=${1:?runtime id}
 SUB=${2:-serve}
 NREQ=${3:-4}
 SAMPLED=${4:-0}
 R=$INK2Q_ROOT
 STUDIO=$STUDIO_HOME/bin/studio
-PACK=$INK2Q_WORK/tf-pack
-TF=$INK2Q_WORK/tf-fork/zig-out/bin/tf-inkling-run
+PACK=$TF_PACK
+TF=$TF_FORK/zig-out/bin/tf-inkling-run
 OUT=$INK2Q_WORK/tf-m2p1
 W=$R/reports/tf-m2p1
 S=$W/$SUB
 LONG=$INK2Q_WORK/tf-m2p1-long8k
 PORT=8199
 mkdir -p $S
-cp $INK2Q_WORK/tf-fork/REVISION $S/tf-revision.txt
+cp $TF_FORK/REVISION $S/tf-revision.txt
 # 0. identity with the gated build
 # the runtime served below must be the build the identity leg checks: same commit, clean tree
-read -r REV DIRTY < $INK2Q_WORK/tf-fork/REVISION
+read -r REV DIRTY < $TF_FORK/REVISION
 [ "$DIRTY" = "dirty=0" ] || { echo "tf-fork build is from a dirty tree ($DIRTY)"; exit 1; }
 case "$RID" in *"${REV:0:12}"*) ;; *) echo "runtime $RID is not commit ${REV:0:12}"; exit 1 ;; esac
 $TF $PACK layers $R/reports/tf-m1/layers/ids.json $OUT/layers-win-$SUB.bin 48 --window

@@ -3,15 +3,14 @@
 # forward with source non-experts (as B' does for oQe), on the held-out, agentic and long sets; paired comparisons
 # against B' and against served oQe.
 set -euo pipefail
+. "$(dirname "$0")/env.sh" && need UV || exit 1
 R=$INK2Q_ROOT
-REPO=$STUDIO_REPO
-UV=$UV
 D=$R/data
 S=$D/sessions
 K=$INK2Q_WORK/kortexa
 OUT=$INK2Q_WORK/kortexa-eval
 W=$R/reports/exl3q
-cd "$REPO"
+cd "$STUDIO_REPO"
 mkdir -p $W
 ( while true; do
     echo "$(date +%T) $(vm_stat | awk '/free|wired|active|inactive|compressor/ {gsub(/\./,"",$NF); printf "%s=%.1f ", $2, $NF*16384/2^30}') swap=$(sysctl -n vm.swapusage | awk '{print $6}')"

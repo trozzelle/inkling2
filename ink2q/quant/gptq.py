@@ -16,7 +16,7 @@ def factor(H: torch.Tensor, damp: float):
     L = torch.linalg.cholesky(H)
     Hinv = torch.cholesky_inverse(L)
     # U = Lᵀ for H⁻¹ = L Lᵀ, so H⁻¹ = UᵀU with U upper. Not cholesky(upper=True): at 4608² with 12 threads that
-    # LAPACK path corrupts the heap on the inference Mac (macOS 27.0.1, torch 2.13; wrong batches, then a segfault).
+    # LAPACK path corrupts the heap (macOS 27.0.1, torch 2.13; wrong batches, then a segfault).
     return torch.linalg.cholesky(Hinv).mT.contiguous(), dead
 
 

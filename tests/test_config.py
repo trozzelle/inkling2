@@ -7,7 +7,7 @@ def test_paths_default(monkeypatch):
     for k in ("INK2Q_ROOT", "INK2Q_SOURCE", "INK2Q_DATA"):
         monkeypatch.delenv(k, raising=False)
     p = Paths.from_env()
-    assert p.root == Path("$INK2Q_ROOT")
+    assert p.root == Path(__file__).resolve().parents[1] / "work"
     assert p.source == p.root / "source"
     assert p.data == p.root / "data"
 

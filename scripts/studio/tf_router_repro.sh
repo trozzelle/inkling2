@@ -3,6 +3,7 @@
 # router's exact command line, output to a file, and polls /health and /v1/models every 10 s. If it is not healthy in
 # 8 min, a stack sample is taken and two variants run (--no-drafts; without --dashboard) to isolate the cause.
 set -uo pipefail
+. "$(dirname "$0")/env.sh" && need STUDIO_HOME STUDIO_ALLOWED_HOSTS || exit 1
 RID=${1:?runtime id}
 W=$INK2Q_ROOT/reports/tf-m2p2/router
 BIN=$STUDIO_HOME/runtimes/tensorfold/$RID/source/zig-out/native/bin/tensorfold-native
@@ -16,7 +17,7 @@ echo "preflight: pass"
 run() {  # run NAME FLAGS...: 0 when /health answers 200 within 8 min
   local name=$1; shift
   local log=$W/$name.log polls=$W/$name-polls.txt t0=$(date +%s) code
-  "$BIN" serve $INK2Q_WORK/tf-pack --name inkling2-exl3-tf --host 127.0.0.1 --port $PORT --context 32768 \
+  "$BIN" serve "$TF_PACK" --name inkling2-exl3-tf --host 127.0.0.1 --port $PORT --context 32768 \
     --max-tokens 8192 --parallel 1 "$@" --load-limit-gb 236 > $log 2>&1 &
   local pid=$!
   : > $polls
@@ -42,8 +43,10 @@ run() {  # run NAME FLAGS...: 0 when /health answers 200 within 8 min
   return 1
 }
 
-FLAGS=(--allowed-host inference-mac.local --allowed-host 192.0.2.10 --dashboard)
+HOSTS=()
+for h in $STUDIO_ALLOWED_HOSTS; do HOSTS+=(--allowed-host "$h"); done
+FLAGS=("${HOSTS[@]}" --dashboard)
 run exact "${FLAGS[@]}" && { echo done; exit 0; }
 run nodrafts "${FLAGS[@]}" --no-drafts
-run nodashboard --allowed-host inference-mac.local --allowed-host 192.0.2.10
+run nodashboard "${HOSTS[@]}"
 echo done

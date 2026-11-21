@@ -2,14 +2,13 @@
 # scripts/studio/w2.sh: runs inside window.sh. Teacher finals for the session sets, the fair oQe baseline B'
 # (oQe experts, source non-experts, ink2q forward), the per-layer profile and the NVFP4 yardstick.
 set -euo pipefail
+. "$(dirname "$0")/env.sh" && need UV || exit 1
 R=$INK2Q_ROOT
-REPO=$STUDIO_REPO
-UV=$UV
 D=$R/data
 S=$D/sessions
 OQE=$R/models/Inkling-2-Small-oQe-3.07bpw-MLX
 W=$R/reports/w2
-cd "$REPO"
+cd "$STUDIO_REPO"
 mkdir -p $W
 ( while true; do
     echo "$(date +%T) $(vm_stat | awk '/free|wired|active|inactive|compressor/ {gsub(/\./,"",$NF); printf "%s=%.1f ", $2, $NF*16384/2^30}') swap=$(sysctl -n vm.swapusage | awk '{print $6}')"

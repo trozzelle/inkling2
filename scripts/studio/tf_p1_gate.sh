@@ -3,15 +3,14 @@
 # steps (stop on any difference), greedy decode speed after the bench prompt and after an 8,192-token prompt, and the
 # per-class profile of 48-layer decode steps at 1 and 6 rows.
 set -euo pipefail
+. "$(dirname "$0")/env.sh" && need UV || exit 1
 R=$INK2Q_ROOT
-REPO=$STUDIO_REPO
-UV=$UV
-PACK=$INK2Q_WORK/tf-pack
-TF=$INK2Q_WORK/tf-fork/zig-out/bin/tf-inkling-run
+PACK=$TF_PACK
+TF=$TF_FORK/zig-out/bin/tf-inkling-run
 W=$R/reports/tf-m2p1
 mkdir -p $W
-cd "$REPO"
-cp $INK2Q_WORK/tf-fork/REVISION $W/tf-revision.txt
+cd "$STUDIO_REPO"
+cp $TF_FORK/REVISION $W/tf-revision.txt
 $TF $PACK exact $R/reports/tf-m1/layers/ids.json 448 2>&1 | tee $W/exact.log
 BENCH=$(head -1 $INK2Q_WORK/tf-m2p0/ids/index.txt)
 $TF $PACK greedy $BENCH 256 2>&1 | tee $W/greedy-bench.log

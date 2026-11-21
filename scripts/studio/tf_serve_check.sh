@@ -2,9 +2,10 @@
 # scripts/studio/tf_serve_check.sh RUNTIME_ID: runs inside window.sh. The installed TensorFold runtime serves the
 # Inkling 2 EXL3 directory on a loopback port; a smoke and a one-stream decode bench run against it.
 set -euo pipefail
+. "$(dirname "$0")/env.sh" && need STUDIO_HOME || exit 1
 RID=${1:?runtime id}
 STUDIO=$STUDIO_HOME/bin/studio
-PACK=$INK2Q_WORK/tf-pack
+PACK=$TF_PACK
 W=$INK2Q_ROOT/reports/tf-m1
 PORT=8199
 TFBIN=$(find $STUDIO_HOME/runtimes/tensorfold -maxdepth 7 -type f -name tensorfold-native -path "*$RID*" | head -1)

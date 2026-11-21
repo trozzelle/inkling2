@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # scripts/studio/w1.sh: runs inside window.sh. Teacher pass (G1b), oQe fidelity and speed (baseline B).
 set -euo pipefail
+. "$(dirname "$0")/env.sh" && need UV STUDIO_HOME OMLX_BIN || exit 1
 R=$INK2Q_ROOT
-REPO=$STUDIO_REPO
-UV=$UV
 D=$R/data
 OQE=$R/models/Inkling-2-Small-oQe-3.07bpw-MLX
-OMLX=$OMLX_BIN   # internal SSD: the data volume is exFAT and its ._ files break venvs
-cd "$REPO"
+OMLX=$OMLX_BIN   # internal SSD: an exFAT volume's ._ files break venvs
+cd "$STUDIO_REPO"
 $UV run python -m ink2q.teacher --source $R/source --tokens $D/heldout.safetensors --out $R/teacher/heldout
 $UV run python -m ink2q.evaluate --source $R/source --tokens $D/heldout.safetensors \
   --manifest $D/heldout_manifest.json --teacher $R/teacher/heldout --out $R/reports/g1b.json
-PYTHONPATH=$REPO $OMLX/python scripts/score_omlx.py --model $OQE --source $R/source \
+PYTHONPATH=$STUDIO_REPO $OMLX/python scripts/score_omlx.py --model $OQE --source $R/source \
   --tokens $D/heldout.safetensors --manifest $D/heldout_manifest.json --teacher $R/teacher/heldout \
   --out $R/reports/oqe-heldout.json
 KEY=$(openssl rand -hex 16)

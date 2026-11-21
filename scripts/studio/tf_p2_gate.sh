@@ -10,12 +10,11 @@
 #   3. measurements: sampled (temperature 0.7) with drafts; fixed depth 4; floors 0.6 and 0.8; bf16 draft layers; one
 #      round-timing leg.
 set -euo pipefail
+. "$(dirname "$0")/env.sh" && need UV STUDIO_HOME || exit 1
 RID=${1:?runtime id}
 R=$INK2Q_ROOT
-REPO=$STUDIO_REPO
-UV=$UV
-PACK=$INK2Q_WORK/tf-pack
-TF=$INK2Q_WORK/tf-fork/zig-out/bin/tf-inkling-run
+PACK=$TF_PACK
+TF=$TF_FORK/zig-out/bin/tf-inkling-run
 P0=$INK2Q_WORK/tf-m2p0
 W1=$R/reports/tf-m2p2/w1
 W=$R/reports/tf-m2p2/w2
@@ -33,11 +32,11 @@ for i in 1 2; do
 done
 BIN=$(find $STUDIO_HOME/runtimes/tensorfold -maxdepth 7 -type f -name tensorfold-native -path "*$RID*" | head -1)
 [ -x "$BIN" ] || { echo "preflight: no tensorfold-native server for runtime $RID"; exit 1; }
-read -r REV DIRTY < $INK2Q_WORK/tf-fork/REVISION
+read -r REV DIRTY < $TF_FORK/REVISION
 [ "$DIRTY" = "dirty=0" ] || { echo "preflight: tf-fork build is from a dirty tree ($DIRTY)"; exit 1; }
 case "$RID" in *"${REV:0:12}"*) ;; *) echo "preflight: runtime $RID is not commit ${REV:0:12}"; exit 1 ;; esac
-cp $INK2Q_WORK/tf-fork/REVISION $W/tf-revision.txt
-cd "$REPO"
+cp $TF_FORK/REVISION $W/tf-revision.txt
+cd "$STUDIO_REPO"
 echo "preflight: pass"
 
 same_tokens() {  # same_tokens A B: the first JSON int-list line of each log, equal on a common prefix of >= 250

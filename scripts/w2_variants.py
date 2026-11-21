@@ -2,7 +2,9 @@
 import json
 import sys
 
-OQE = "$INK2Q_ROOT/models/Inkling-2-Small-oQe-3.07bpw-MLX"
+from ink2q.config import Paths
+
+OQE = str(Paths.from_env().root / "models" / "Inkling-2-Small-oQe-3.07bpw-MLX")
 
 
 def variants(oqe: str = OQE, layers: int = 48) -> list[dict]:
