@@ -254,3 +254,91 @@ def test_accept_identical_and_perturbed(tmp_path):
     # a set below the row minimum is reported but not gated, and with nothing gated there is no pass
     r = tfdspark.accept(tf, ref, taps, meta)
     assert r["gated_sets"] == [] and not r["pass"] and r["tokens_per_cycle_rel_diff"]["bench"][5] < -0.01
+
+
+def _write_replay(tf, taps, seq, accepted, probs_row, L=10, T=60):
+    """One replayed sequence: from row L - 1 on every hold's first `accepted` proposals are the recorded next tokens, then a
+    miss, each proposal with the probability in `probs_row`; -1 before the prompt's end. 44 scored rows at the defaults."""
+    name = f"seq-{seq:05d}"
+    tokens = list(range(100, 100 + T + 1))
+    (taps / f"{name}.tokens.json").write_text(json.dumps({"prompt": L, "tokens": tokens}))
+    props = np.full((T, 7), -1, np.int32)
+    probs = np.full((T, 7), -1, np.float32)
+    for p in range(L - 1, T):
+        row = [tokens[p + 2 + k] if p + 2 + k < len(tokens) else -2 for k in range(7)]
+        if accepted < 7:
+            row[accepted] = -9
+        props[p] = row
+        probs[p] = probs_row
+    props.astype("<i4").tofile(tf / f"{name}.props.bin")
+    probs.astype("<f4").tofile(tf / f"{name}.probs.bin")
+
+
+@pytest.fixture
+def replay(tmp_path):
+    tf, taps = tmp_path / "tf", tmp_path / "taps"
+    tf.mkdir(), taps.mkdir()
+    _write_replay(tf, taps, 0, 3, [0.95, 0.95, 0.95, 0.2, 0.2, 0.2, 0.2])   # bench: three land, the fourth is doubtful
+    _write_replay(tf, taps, 1, 1, [0.9, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2])      # chat: one lands, the second is doubtful
+    _write_replay(tf, taps, 2, 7, [0.95] * 7)                              # agentic: all seven land
+    meta = [{"seq": 0, "set": "bench"}, {"seq": 1, "set": "chat"}, {"seq": 2, "set": "agentic"}]
+    (tmp_path / "prompts.json").write_text(json.dumps(meta))
+    return tf, taps, meta, tmp_path / "prompts.json"
+
+
+def test_depthsim_rates_each_set_and_the_gate_sets_together(replay):
+    tf, taps, meta, _ = replay
+    rep = tfdspark.depthsim(tf, taps, meta)
+    assert list(rep["sets"]) == ["bench", "chat", "agentic", "gate", "all"]
+    assert [rep["sets"][k]["rows"] for k in rep["sets"]] == [44, 44, 44, 88, 132]
+    assert rep["sets"]["gate"]["sequences"] == [0, 1] and rep["sets"]["all"]["sequences"] == [0, 1, 2]
+    g = rep["sets"]["gate"]
+    # depth 3: bench rounds take 4 rows (11 rounds), chat rounds 2 (22): 33 rounds, 88 tokens, 3 drafts each
+    assert g["fixed"]["3"]["rounds"] == 33 and g["fixed"]["3"]["tokens_per_round"] == pytest.approx(88 / 33)
+    assert g["fixed"]["3"]["tok_s"] == pytest.approx(88000 / (33 * 31.1 + 5.95 * 99))
+    # the floor verifies 3 drafts of bench's holds and 1 of chat's: 55 drafts for the same rounds and tokens
+    assert g["floor"]["0.70"]["rounds"] == 33 and g["floor"]["0.70"]["drafts_per_round"] == pytest.approx(55 / 33)
+    assert g["floor"]["0.70"]["tok_s"] == pytest.approx(88000 / (33 * 31.1 + 5.95 * 55))
+    assert g["best_floor"]["tok_s"] >= g["floor"]["0.70"]["tok_s"] and g["best_floor"]["vs_best_fixed_pct"] > 0
+    # agentic's seven land: the floor takes all seven where depth 7 does (6 rounds of 8 rows over 44)
+    a = rep["sets"]["agentic"]
+    assert a["floor"]["0.70"]["tok_s"] == pytest.approx(a["fixed"]["7"]["tok_s"]) and a["best_fixed"]["depth"] == 7
+    assert rep["cost"] == {"verify_ms": 25.2, "row_ms": 5.95, "hold_ms": 5.9}
+
+
+def test_depthsim_takes_the_cost_model_and_the_floors_it_is_given(replay):
+    from ink2q import tfdepth
+    tf, taps, meta, _ = replay
+    rep = tfdspark.depthsim(tf, taps, meta, tfdepth.Cost(10.0, 1.0, 2.0), [0.4, 0.8])
+    assert rep["thresholds"] == [0.4, 0.8] and list(rep["sets"]["gate"]["floor"]) == ["0.40", "0.80"]
+    assert rep["sets"]["gate"]["fixed"]["3"]["tok_s"] == pytest.approx(88000 / (33 * 12 + 1.0 * 99))
+
+
+def test_depthsim_refuses_a_replay_with_rows_missing_or_without_probabilities(replay):
+    tf, taps, meta, _ = replay
+    (tf / "seq-00001.probs.bin").write_bytes(np.full((59, 7), 0.9, "<f4").tobytes())
+    with pytest.raises(ValueError, match="seq-00001.*59 probs rows, expected 60"):
+        tfdspark.depthsim(tf, taps, meta)
+    np.full((60, 7), -1, "<f4").tofile(tf / "seq-00001.probs.bin")   # a replay that never kept them
+    with pytest.raises(ValueError, match="seq 1"):
+        tfdspark.depthsim(tf, taps, meta)
+    (tf / "seq-00001.probs.bin").write_bytes(b"\0" * 7)
+    with pytest.raises(ValueError, match="multiple of 7"):
+        tfdspark.depthsim(tf, taps, meta)
+    (tf / "seq-00001.probs.bin").unlink()
+    with pytest.raises(FileNotFoundError):
+        tfdspark.depthsim(tf, taps, meta)
+
+
+def test_depthsim_command_prints_the_table_and_writes_the_report(replay, tmp_path, monkeypatch, capsys):
+    tf, taps, _, prompts = replay
+    out = tmp_path / "depthsim.json"
+    argv = ["tfdspark", "depthsim", "--tf", str(tf), "--taps", str(taps), "--prompts", str(prompts), "--verify-ms", "25.2",
+            "--row-ms", "5.95", "--hold-ms", "5.9", "--thresholds", "0.5,0.7,0.9", "--out", str(out)]
+    monkeypatch.setattr("sys.argv", argv)
+    tfdspark.main()
+    text = capsys.readouterr().out
+    assert "fixed 1" in text and "fixed 7" in text and "floor 0.70" in text and "floor 0.30" not in text and "best floor" in text
+    rep = json.loads(out.read_text())
+    assert rep["thresholds"] == [0.5, 0.7, 0.9] and rep["sets"]["gate"]["rows"] == 88
+    assert rep["sets"]["gate"]["floor"]["0.70"]["tok_s"] == pytest.approx(88000 / (33 * 31.1 + 5.95 * 55))

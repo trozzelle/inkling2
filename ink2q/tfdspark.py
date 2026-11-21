@@ -21,6 +21,12 @@ as information only.
 per-position acceptance, as scripts/dspark_accept.py summarises them); it passes when TensorFold's tokens per cycle are
 within 1% of the reference's at every depth for every set of at least 1,000 scored rows. Smaller sets (one sequence, a
 few hundred rows) are reported but not gated: a single divergent proposal moves them by more than 1%.
+
+`depthsim` replays a draft depth policy on TensorFold's own replay: `seq-NNNNN.props.bin` and `seq-NNNNN.probs.bin` (f32 [T][7], the
+top-1 probability of each proposal under its step's logits, -1 where no hold ran) of every hold, all of them, against the recorded
+tokens. It reports tokens per second of fixed depths 1 to 7 and of a confidence floor (the first draft verified, each next one while its
+own probability is at least the floor) on each set of the prompts file (the gate's sets, bench and chat, as `gate`, and `all`), by a
+cost model of a round: window, each verified draft, drafter hold. See ink2q/tfdepth.py.
 """
 import argparse
 import json
@@ -265,6 +271,37 @@ def accept(tf_dir: Path, ref_dir: Path, taps: Path, prompts: list[dict], min_row
             "min_rows": min_rows, "gated_sets": gated, "pass": ok}
 
 
+def load_probs_tf(path: Path) -> np.ndarray:
+    """f32 [T][7]: each proposal's probability under its step's logits, -1 where no hold ran."""
+    raw = np.fromfile(path, "<f4")
+    if raw.size % BLOCK:
+        raise ValueError(f"{path}: {raw.size} float32 values is not a multiple of {BLOCK}")
+    return raw.reshape(-1, BLOCK)
+
+
+def depthsim(tf_dir: Path, taps: Path, prompts: list[dict], cost=None, thresholds=None) -> dict:
+    """Rates of fixed depths and of confidence floors on every set of `prompts` (see ink2q/tfdepth.py): the gate's sets pooled as
+    `gate`, every sequence as `all`, and each set of its own."""
+    from ink2q import tfdepth
+    from ink2q.tfaccept import accept_lengths
+    seqs = {}
+    for meta in prompts:
+        seq = meta["seq"]
+        name = f"seq-{seq:05d}"
+        meta_t = json.loads((taps / f"{name}.tokens.json").read_text())
+        L, tokens = meta_t["prompt"], np.array(meta_t["tokens"], np.int64)
+        T = len(tokens) - 1
+        props = load_props_tf(tf_dir / f"{name}.props.bin")
+        probs = load_probs_tf(tf_dir / f"{name}.probs.bin")
+        if len(props) != T or len(probs) != T:
+            raise ValueError(f"{name}: {len(props)} props rows and {len(probs)} probs rows, expected {T}")
+        seqs[seq] = (accept_lengths(props, tokens, L - 1, T - 7), probs[L - 1:T - 7])
+    sets = {k: [m["seq"] for m in prompts if m["set"] == k] for k in ("bench", "chat", "agentic")}
+    sets["gate"] = [m["seq"] for m in prompts if m["set"] in tfdepth.GATE_SETS]
+    sets["all"] = [m["seq"] for m in prompts]
+    return tfdepth.simulate(seqs, sets, cost or tfdepth.Cost(), tfdepth.THRESHOLDS if thresholds is None else thresholds)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -279,7 +316,24 @@ def main() -> None:
     c.add_argument("--taps", type=Path, required=True)
     c.add_argument("--prompts", type=Path, required=True)
     c.add_argument("--out", type=Path)
+    c = sub.add_parser("depthsim", help="tokens per second of fixed draft depths and of a confidence floor, simulated on a replay")
+    c.add_argument("--tf", type=Path, required=True, help="directory with seq-NNNNN.{props,probs}.bin")
+    c.add_argument("--taps", type=Path, required=True, help="directory with seq-NNNNN.tokens.json")
+    c.add_argument("--prompts", type=Path, required=True)
+    c.add_argument("--verify-ms", type=float, default=25.2, help="a window of the pending row alone")
+    c.add_argument("--row-ms", type=float, default=5.95, help="each draft verified past it")
+    c.add_argument("--hold-ms", type=float, default=5.9, help="the drafter's hold (and its encode), the same at any depth")
+    c.add_argument("--thresholds", default=None, help="comma list of floors (0.30 to 0.95 by 0.05 when not given)")
+    c.add_argument("--out", type=Path, help="also write the JSON report here")
     a = ap.parse_args()
+    if a.cmd == "depthsim":
+        from ink2q import tfdepth
+        floors = [float(x) for x in a.thresholds.split(",")] if a.thresholds else None
+        rep = depthsim(a.tf, a.taps, json.loads(a.prompts.read_text()), tfdepth.Cost(a.verify_ms, a.row_ms, a.hold_ms), floors)
+        if a.out:
+            a.out.write_text(json.dumps(rep, indent=1) + "\n")
+        print(tfdepth.format_report(rep))
+        return
     if a.cmd == "accept":
         rep = accept(a.tf, a.ref, a.taps, json.loads(a.prompts.read_text()))
         text = json.dumps(rep, indent=1) + "\n"
