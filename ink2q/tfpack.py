@@ -1,6 +1,6 @@
 """A TensorFold Inkling 2 EXL3 model directory: the source's non-expert backbone tensors copied byte for byte into
-model-dense.safetensors, its config (quantization naming the EXL3 pack) and tokenizer files, and the pack linked as
-experts/."""
+model-dense.safetensors, its config (quantization naming the EXL3 pack) and tokenizer files, the pack linked as
+experts/ and, when the source has one, the draft head linked as mtp.safetensors."""
 import argparse
 import json
 import re
@@ -9,6 +9,7 @@ import struct
 from pathlib import Path
 
 PACK_FORMAT = "kortexa-inkling2-exl3-v1"
+MTP_FILE = "mtp.safetensors"
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "generation_config.json",
                    "special_tokens_map.json")
 _LAYER = re.compile(r"^model\.llm\.layers\.(\d+)\.")
@@ -95,10 +96,12 @@ def main_args(argv: list[str] | None = None) -> dict:
     copied = [f for f in TOKENIZER_FILES if (a.source / f).exists()]
     for f in copied:
         shutil.copyfile(a.source / f, a.out / f)
-    link = a.out / "experts"
-    if link.is_symlink() or link.exists():
-        link.unlink()
-    link.symlink_to(a.experts.resolve(), target_is_directory=True)
+    for name, target, is_dir in (("experts", a.experts, True), (MTP_FILE, a.source / MTP_FILE, False)):
+        link = a.out / name
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        if target.exists():
+            link.symlink_to(target.resolve(), target_is_directory=is_dir)
     res = {"tensors": len(names), "dense_bytes": data, "layers": [lo, hi], "tokenizer": copied}
     (a.out / "inkling2-pack.json").write_text(json.dumps(res, indent=1) + "\n")
     print(json.dumps(res))

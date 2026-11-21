@@ -77,3 +77,21 @@ def test_incomplete_pack_is_refused(tmp_path):
     src, pack = make_source(tmp_path / "src"), make_pack(tmp_path / "pack", status="partial")
     with pytest.raises(SystemExit):
         tfpack.main_args(["--source", str(src), "--experts", str(pack), "--out", str(tmp_path / "out")])
+
+
+def test_draft_head_is_linked_when_the_source_has_one(tmp_path):
+    src, pack, out = make_source(tmp_path / "src"), make_pack(tmp_path / "pack"), tmp_path / "out"
+    save_file({"fuse_weight": np.zeros((6, 8), np.float32)}, str(src / "mtp.safetensors"))
+    tfpack.main_args(["--source", str(src), "--experts", str(pack), "--out", str(out)])
+    link = out / "mtp.safetensors"
+    assert link.is_symlink() and link.resolve() == (src / "mtp.safetensors").resolve()
+    tfpack.main_args(["--source", str(src), "--experts", str(pack), "--out", str(out)])   # a second run replaces it
+    assert link.is_symlink() and link.resolve() == (src / "mtp.safetensors").resolve()
+
+
+def test_no_draft_head_link_without_one_in_the_source(tmp_path):
+    src, pack, out = make_source(tmp_path / "src"), make_pack(tmp_path / "pack"), tmp_path / "out"
+    out.mkdir()
+    (out / "mtp.safetensors").symlink_to(tmp_path / "gone.safetensors")                    # left by an earlier run
+    tfpack.main_args(["--source", str(src), "--experts", str(pack), "--out", str(out)])
+    assert not (out / "mtp.safetensors").is_symlink() and not (out / "mtp.safetensors").exists()
