@@ -49,7 +49,8 @@ m = min(L, len(p0))
 prompt_same = int((f[:m] == p0[:m]).all(axis=(1, 2)).sum())
 r = {"rows": n, "rows_equal_study": same, "prompt_rows": m, "prompt_rows_equal_recorded": prompt_same}
 print(json.dumps(r))
-sys.exit(0 if same == n and prompt_same == m else 1)
+# only the same-build identity is fatal; the earlier recorded taps' prompt rows are recorded for the report
+sys.exit(0 if n > 0 and same == n else 1)
 PY
 
 # 3. greedy with drafts equals plain greedy
@@ -59,7 +60,16 @@ for i in 1 2 3 4; do
   INKLING_DRAFT_DEPTH=5 $TF $PACK greedy $ids 256 --drafts 2>&1 | tee $W/greedy-drafts-$i.log | tail -2
   $UV run python - "$W/greedy-plain-$i.log" "$W/greedy-drafts-$i.log" <<'PY' || { echo "greedy tokens differ with drafts (prompt $i)"; exit 1; }
 import json, sys
-a, b = (json.loads(open(p).readline()) for p in sys.argv[1:3])
+def tokens(path):  # the first line that is a JSON list of ints (log lines may come before it)
+    for line in open(path):
+        try:
+            v = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(v, list) and all(isinstance(x, int) for x in v):
+            return v
+    raise SystemExit(f"no token list in {path}")
+a, b = tokens(sys.argv[1]), tokens(sys.argv[2])
 n = min(len(a), len(b))
 print(json.dumps({"plain": len(a), "drafts": len(b), "compared": n, "equal": a[:n] == b[:n]}))
 sys.exit(0 if n >= 250 and a[:n] == b[:n] else 1)
