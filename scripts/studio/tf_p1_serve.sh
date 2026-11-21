@@ -5,6 +5,8 @@
 # runtime serves the model on a loopback port and `studio bench` measures one-stream decode at <= 1k context and after
 # an 8k-token prompt. With SAMPLED=1, streamed requests at temperature 0.7 measure sampled decode too. With REF_RID
 # set, that runtime is served first and three seeded temperature-0.7 replies must match the tested runtime's exactly.
+# With AB=1, the server is restarted with INKLING_WARM_WAIT=0, then INKLING_FIRST_CHUNK=0, for shorter benches, and
+# finally with INKLING_ROUND_TIMING=1 for two greedy and two sampled replies (the gate numbers above run without it).
 set -euo pipefail
 RID=${1:?runtime id}
 SUB=${2:-serve}
@@ -86,14 +88,14 @@ $STUDIO bench --base-url http://127.0.0.1:$PORT/v1 --model inkling2-exl3-tf --co
   --max-tokens 256 --output $S/bench-1k.json --label decode-path
 $STUDIO bench --base-url http://127.0.0.1:$PORT/v1 --model inkling2-exl3-tf --concurrency 1 --requests 2 \
   --max-tokens 256 --prompt-file $LONG.txt --output $S/bench-8k.json --label decode-path-8k
-if [ "$SAMPLED" = 1 ]; then
-  # streamed chat at temperature 0.7: decode rate from the first to the last streamed chunk
-  python3 - "$PORT" "$S/sampled.jsonl" <<'PY'
+sampled_leg() {  # sampled_leg OUT ROUNDS: streamed chat at temperature 0.7, decode rate from the first to the last chunk
+  python3 - "$PORT" "$1" "$2" <<'PY'
 import json, sys, time, urllib.request
-port, out = sys.argv[1], sys.argv[2]
+port, out, rounds = sys.argv[1], sys.argv[2], int(sys.argv[3])
 prompts = ["Explain why the sky is blue in three sentences.", "Write a Python function that merges two sorted lists.",
-           "Summarise the plot of Hamlet in one paragraph.", "Describe how a hash map handles collisions."]
-for i, p in enumerate(prompts + prompts[:2]):
+           "Summarise the plot of Hamlet in one paragraph.", "Describe how a hash map handles collisions.",
+           "Explain why the sky is blue in three sentences.", "Write a Python function that merges two sorted lists."]
+for i, p in enumerate(prompts[:rounds]):
     for knobs in ({"temperature": 0.7, "top_p": 0.95}, {"temperature": 0.7, "top_p": 0.95, "top_k": 20}):
         body = dict(model="inkling2-exl3-tf", stream=True, max_tokens=256, messages=[{"role": "user", "content": p}], **knobs)
         req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", json.dumps(body).encode(),
@@ -109,5 +111,27 @@ for i, p in enumerate(prompts + prompts[:2]):
         rec = {"prompt": i, **knobs, "chunks": len(stamps), "ttft_s": round(stamps[0] - t0, 3), "decode_chunks_per_s": round(rate, 2)}
         print(json.dumps(rec)); open(out, "a").write(json.dumps(rec) + "\n")
 PY
+}
+restart() {  # restart LOG [VAR=VALUE ...]: serve the tested runtime again with extra environment
+  local log=$1; shift
+  kill $SERVER; wait $SERVER 2>/dev/null || true; SERVER=
+  export "$@"
+  serve_up "$RID" "$log"
+  unset ${@%%=*}
+}
+[ "$SAMPLED" = 1 ] && sampled_leg $S/sampled.jsonl 6
+if [ "${AB:-0}" = 1 ]; then
+  # the host-side switches on the full model, one at a time, then the per-round timing in its own short leg
+  restart $S/serve-nowarm.log INKLING_WARM_WAIT=0
+  $STUDIO bench --base-url http://127.0.0.1:$PORT/v1 --model inkling2-exl3-tf --concurrency 1 --requests 6 \
+    --max-tokens 256 --output $S/bench-1k-nowarm.json --label warm-wait-off
+  sampled_leg $S/sampled-nowarm.jsonl 3
+  restart $S/serve-nochunk.log INKLING_FIRST_CHUNK=0
+  $STUDIO bench --base-url http://127.0.0.1:$PORT/v1 --model inkling2-exl3-tf --concurrency 1 --requests 6 \
+    --max-tokens 256 --output $S/bench-1k-nochunk.json --label first-chunk-off
+  restart $S/serve-timing.log INKLING_ROUND_TIMING=1
+  $STUDIO bench --base-url http://127.0.0.1:$PORT/v1 --model inkling2-exl3-tf --concurrency 1 --requests 2 \
+    --max-tokens 256 --output $S/bench-1k-timing.json --label round-timing
+  sampled_leg $S/sampled-timing.jsonl 1
 fi
 echo done
