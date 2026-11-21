@@ -93,8 +93,11 @@ def request_body(a, entry: dict) -> dict:
 
 
 def run_request(a, entry: dict) -> dict:
+    headers = {"content-type": "application/json"}
+    if getattr(a, "api_key_file", None):
+        headers["authorization"] = "Bearer " + a.api_key_file.read_text().strip()
     req = urllib.request.Request(a.base_url.rstrip("/") + "/chat/completions", json.dumps(request_body(a, entry)).encode(),
-                                 {"content-type": "application/json"})
+                                 headers)
     t0, events = time.perf_counter(), []
     with urllib.request.urlopen(req, timeout=a.timeout) as r:
         for line in r:
@@ -133,6 +136,7 @@ def main(argv=None) -> None:
     b.add_argument("--temperature", type=float, default=0.0)
     b.add_argument("--seed", type=int)
     b.add_argument("--timeout", type=float, default=600.0)
+    b.add_argument("--api-key-file", type=Path, help="a file holding the bearer key, for a server behind a router")
     b.add_argument("--out", type=Path, required=True)
     b.set_defaults(fn=bench_cmd)
     a = ap.parse_args(argv)
