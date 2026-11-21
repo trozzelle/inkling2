@@ -41,7 +41,7 @@ serve_up() {  # serve_up RUNTIME_ID LOG: start the runtime's server on $PORT and
   local bin
   bin=$(find $STUDIO_HOME/runtimes/tensorfold -maxdepth 7 -type f -name tensorfold-native -path "*$1*" | head -1)
   [ -x "$bin" ] || { echo "no tensorfold-native server for runtime $1" >&2; exit 1; }
-  "$bin" serve "$PACK" --name inkling2-exl3-tf --context 32768 --parallel 1 --load-limit-gb 236 --port $PORT > "$2" 2>&1 &
+  "$bin" serve "$PACK" --name inkling2-exl3-tf --context 32768 --parallel 1 --load-limit-gb 236 --no-drafts --port $PORT > "$2" 2>&1 &
   SERVER=$!
   for i in $(seq 1 120); do
     curl -sf http://127.0.0.1:$PORT/v1/models > /dev/null && return 0
