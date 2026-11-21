@@ -63,7 +63,7 @@ with open(out, "w") as f:
         d = json.load(urllib.request.urlopen(req, timeout=600))
         m = d["choices"][0]["message"]
         f.write(json.dumps({"seed": 1000 + seed, "content": m.get("content"), "reasoning": m.get("reasoning_content"),
-                            "usage": d.get("usage")}, sort_keys=True) + "\n")
+                            "completion_tokens": (d.get("usage") or {}).get("completion_tokens")}, sort_keys=True) + "\n")
 PY
 }
 SERVER=
@@ -77,8 +77,9 @@ fi
 serve_up "$RID" $S/serve.log
 seeded $S/seeded.jsonl
 if [ -n "${REF_RID:-}" ]; then
-  cmp $S/seeded-ref.jsonl $S/seeded.jsonl || { echo "seeded sampled replies differ from $REF_RID"; exit 1; }
-  echo "seeded draws: identical to $REF_RID"
+  # recorded, not fatal: the benches below still run
+  if cmp -s $S/seeded-ref.jsonl $S/seeded.jsonl; then echo "seeded draws: identical to $REF_RID" | tee $S/seeded-verdict.txt
+  else echo "seeded draws: DIFFER from $REF_RID" | tee $S/seeded-verdict.txt; fi
 fi
 $STUDIO bench --base-url http://127.0.0.1:$PORT/v1 --model inkling2-exl3-tf --smoke --output $S/smoke.json
 $STUDIO bench --base-url http://127.0.0.1:$PORT/v1 --model inkling2-exl3-tf --concurrency 1 --requests $NREQ \
