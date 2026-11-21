@@ -111,7 +111,7 @@ def test_planted_disagreement_counts_per_position_and_conditionally(dirs):
     q[0:5, 2] += 1          # rows 0..4 miss at position 3 only
     q[5:7, 0] += 1          # rows 5,6 miss everywhere after the first token (shift all)
     q[5:7, 1:] += 1
-    lg = make_logits(rng)
+    lg = make_logits(rng, holds=10)
     write_seq(tf, ref, 0, p, q, lg, lg)
     r = tfdspark.compare(tf, ref, [0])["agreement"]
     assert r["total"] == pytest.approx((70 - 5 - 14) / 70)
@@ -198,3 +198,59 @@ def test_cli_writes_report_and_exit_code(identical, capsys, monkeypatch, tmp_pat
         tfdspark.main()
     assert e.value.code == 0
     assert json.loads(out.read_text())["pass"] is True and json.loads(capsys.readouterr().out)["pass"] is True
+
+
+def test_gate_ignores_steps_after_a_divergent_proposal(dirs):
+    tf, ref = dirs
+    rng = np.random.default_rng(7)
+    p = props_ref(rng=rng)
+    pt = p.copy()
+    pt[10, 2] = (pt[10, 2] + 1) % 50  # hold 0 diverges at step 2: steps 0..2 comparable
+    lg = make_logits(rng)
+    lt = lg.copy()
+    lt[0, 3:] = to_bits(np.random.default_rng(9).standard_normal((4, V)).astype(np.float32) * 5)  # garbage after
+    write_seq(tf, ref, 0, p, pt, lg, lt)
+    r = tfdspark.compare(tf, ref, [0])
+    assert r["logits"]["rel_rms"] == 0 and r["gate"]["rel_rms"]
+    assert r["logits_all_steps"]["rel_rms"] > 0
+    assert r["logits"]["n"] < r["logits_all_steps"]["n"]
+
+
+def test_comparable_steps():
+    a = np.arange(7)
+    assert tfdspark.comparable_steps(a, a) == 7
+    b = a.copy(); b[0] = 9
+    assert tfdspark.comparable_steps(a, b) == 1
+    b = a.copy(); b[4] = 9
+    assert tfdspark.comparable_steps(a, b) == 5
+
+
+def _write_accept(tmp_path, ref_props, tf_props, tokens, L):
+    tf, ref, taps = tmp_path / "tf", tmp_path / "ref", tmp_path / "taps"
+    for d in (tf, ref, taps):
+        d.mkdir()
+    np.save(ref / "seq-00000.props.npy", ref_props.astype(np.int32))
+    tf_props.astype("<i4").tofile(tf / "seq-00000.props.bin")
+    (taps / "seq-00000.tokens.json").write_text(json.dumps({"prompt": L, "tokens": tokens.tolist()}))
+    return tf, ref, taps
+
+
+def test_accept_identical_and_perturbed(tmp_path):
+    L, T = 4, 60
+    tokens = np.arange(T + 1) % 11
+    props = np.full((T, 7), -1, np.int32)
+    for p in range(L - 1, T):
+        props[p] = [tokens[p + 2 + k] if p + 2 + k < len(tokens) else 0 for k in range(7)]
+    meta = [{"seq": 0, "set": "bench"}]
+    tf, ref, taps = _write_accept(tmp_path, props, props, tokens, L)
+    r = tfdspark.accept(tf, ref, taps, meta, min_rows=0)
+    assert r["pass"] and r["ref"]["all"]["tokens_per_cycle"][5] > 5.9
+    assert r["tf"]["bench"]["per_position"]["accept_k"] == r["ref"]["bench"]["per_position"]["accept_k"]
+    bad = props.copy()
+    bad[L - 1 :, 1] = -7  # TF never accepts beyond one draft token
+    (tmp_path / "tf" / "seq-00000.props.bin").write_bytes(bad.astype("<i4").tobytes())
+    r = tfdspark.accept(tf, ref, taps, meta, min_rows=0)
+    assert not r["pass"] and r["tokens_per_cycle_rel_diff"]["all"][5] < -0.01
+    # a set below the row minimum is reported but not gated, and with nothing gated there is no pass
+    r = tfdspark.accept(tf, ref, taps, meta)
+    assert r["gated_sets"] == [] and not r["pass"] and r["tokens_per_cycle_rel_diff"]["bench"][5] < -0.01

@@ -11,6 +11,16 @@ Noise floor: the reference values are bf16, so a bf16 implementation that rounds
 differs by up to one ulp per entry. For a value x the rounding error of bf16 (8 significant bits) is uniform over one
 ulp(x) = 2^(floor(log2|x|) - 7), with rms ulp(x)/sqrt(12). The floor is sqrt(sum ulp^2/12) / sqrt(sum x^2) over the
 reference's finite entries: the rel-RMS of a single bf16 rounding of the reference's own scale. The gate allows 2x it.
+
+A hold's step k is conditioned on the proposal of step k-1 (`prev`), so once the two sides propose different tokens
+the later steps of that hold are not comparable. The gate pools only the comparable steps of each hold: steps 0 up to
+and including the first step whose proposal differs (all 7 when the proposals agree). The all-steps figure is reported
+as information only.
+
+`accept` scores both sides' proposals against the recorded greedy tokens (tokens per cycle at depths 3/5/7 and
+per-position acceptance, as scripts/dspark_accept.py summarises them); it passes when TensorFold's tokens per cycle are
+within 1% of the reference's at every depth for every set of at least 1,000 scored rows. Smaller sets (one sequence, a
+few hundred rows) are reported but not gated: a single divergent proposal moves them by more than 1%.
 """
 import argparse
 import json
@@ -139,9 +149,16 @@ def _agreement(n: np.ndarray, eq: np.ndarray, cond_n: np.ndarray, cond_eq: np.nd
     }
 
 
-def compare_seq(tf_dir: Path, ref_dir: Path, seq: int) -> tuple[dict, list[dict]]:
+def comparable_steps(tf_row: np.ndarray, ref_row: np.ndarray) -> int:
+    """Steps of a hold whose logits are comparable: up to and including the first differing proposal."""
+    diff = np.nonzero(tf_row != ref_row)[0]
+    return BLOCK if diff.size == 0 else int(diff[0]) + 1
+
+
+def compare_seq(tf_dir: Path, ref_dir: Path, seq: int) -> tuple[dict, list[dict], list[dict]]:
     name = f"seq-{seq:05d}"
-    props = compare_props(load_props_tf(tf_dir / f"{name}.props.bin"), load_props_ref(ref_dir / f"{name}.props.npy"))
+    props_tf, props_ref = load_props_tf(tf_dir / f"{name}.props.bin"), load_props_ref(ref_dir / f"{name}.props.npy")
+    props = compare_props(props_tf, props_ref)
     ref = np.load(ref_dir / f"{name}.logits.npy", mmap_mode="r")
     if ref.dtype != np.uint16 or ref.ndim != 3 or ref.shape[1] != BLOCK:
         raise ValueError(f"{name}.logits.npy: dtype {ref.dtype} shape {ref.shape}, expected uint16 [n][{BLOCK}][vocab]")
@@ -153,34 +170,45 @@ def compare_seq(tf_dir: Path, ref_dir: Path, seq: int) -> tuple[dict, list[dict]
     if n > HOLDS:
         raise ValueError(f"{name}.logits.npy has {n} holds, more than the {HOLDS} TensorFold writes")
     tf = tf.reshape(HOLDS, BLOCK, vocab)
-    holds = [logits_stats(np.asarray(tf[i]), np.asarray(ref[i])) for i in range(n)]
-    return props, holds
+    rows = np.nonzero((props_ref >= 0).any(axis=1))[0][:n]
+    if len(rows) < n:
+        raise ValueError(f"{name}: reference saved {n} holds of logits but its props have {len(rows)} hold rows")
+    holds, comparable = [], []
+    for i, row in enumerate(rows):
+        t, r = np.asarray(tf[i]), np.asarray(ref[i])
+        holds.append(logits_stats(t, r))
+        m = comparable_steps(props_tf[row], props_ref[row])
+        comparable.append(logits_stats(t[:m], r[:m]))
+    return props, holds, comparable
 
 
 def compare(tf_dir: Path, ref_dir: Path, seqs: list[int]) -> dict:
-    per_seq, all_holds = {}, []
+    per_seq, all_holds, all_comp = {}, [], []
     tot = {k: np.zeros(BLOCK, np.int64) for k in ("n", "eq", "cond_n", "cond_eq")}
     only_tf = only_ref = rows = prefix = 0
     for seq in seqs:
-        p, holds = compare_seq(tf_dir, ref_dir, seq)
+        p, holds, comp = compare_seq(tf_dir, ref_dir, seq)
         for k in tot:
             tot[k] += p[k]
         only_tf, only_ref, rows, prefix = (only_tf + p["rows_tf_only"], only_ref + p["rows_ref_only"],
                                            rows + p["rows"], prefix + p["prefix_len_sum"])
         all_holds.extend(holds)
+        all_comp.extend(comp)
         per_seq[seq] = {
             "rows": p["rows"],
             "agreement": _agreement(p["n"], p["eq"], p["cond_n"], p["cond_eq"]),
-            "logits": {**_pool(holds), "per_hold": [{"rel_rms": _rel_rms(h["sum_d2"], h["sum_r2"]),
-                                                      "max_abs": h["max_abs"]} for h in holds]},
+            "logits": {**_pool(comp), "per_hold": [{"rel_rms": _rel_rms(h["sum_d2"], h["sum_r2"]),
+                                                     "max_abs": h["max_abs"]} for h in comp]},
+            "logits_all_steps": _pool(holds),
         }
     agreement = _agreement(tot["n"], tot["eq"], tot["cond_n"], tot["cond_eq"])
-    logits = _pool(all_holds)
+    logits = _pool(all_comp)
+    logits_all = _pool(all_holds)
     checks = {
         "agreement": agreement["total"] >= AGREEMENT_MIN,
         "rel_rms": logits["rel_rms"] <= FLOOR_FACTOR * logits["floor"],
         "holds_match": only_tf == 0 and only_ref == 0,
-        "mask_match": logits["nonfinite_mismatch"] == 0,
+        "mask_match": logits_all["nonfinite_mismatch"] == 0,
     }
     return {
         "seqs": seqs,
@@ -189,10 +217,52 @@ def compare(tf_dir: Path, ref_dir: Path, seqs: list[int]) -> dict:
         "rows_ref_only": only_ref,
         "agreement": {**agreement, "mean_agreed_prefix": _frac(prefix, rows)},
         "logits": logits,
+        "logits_all_steps": logits_all,
         "gate": {"agreement_min": AGREEMENT_MIN, "rel_rms_max_over_floor": FLOOR_FACTOR, **checks},
         "pass": bool(all(checks.values())),
         "per_seq": per_seq,
     }
+
+
+ACCEPT_REL_TOL = 0.01
+ACCEPT_MIN_ROWS = 1000
+DEPTHS = (3, 5, 7)
+SETS = ("bench", "chat", "agentic", "all")
+
+
+def _summarize(lengths: dict, prompts: list[dict]) -> dict:
+    from ink2q.tfaccept import per_position, simulate
+    out = {}
+    for kind in SETS:
+        segs = [lengths[m["seq"]] for m in prompts if kind == "all" or m["set"] == kind]
+        if segs:
+            out[kind] = {"rows": int(sum(len(g) for g in segs)),
+                         "per_position": per_position(np.concatenate(segs)),
+                         "tokens_per_cycle": {d: float(np.mean([simulate(g, d)["tokens_per_cycle"] for g in segs]))
+                                              for d in DEPTHS}}
+    return out
+
+
+def accept(tf_dir: Path, ref_dir: Path, taps: Path, prompts: list[dict], min_rows: int = ACCEPT_MIN_ROWS) -> dict:
+    from ink2q.tfaccept import accept_lengths
+    lens = {"tf": {}, "ref": {}}
+    for meta in prompts:
+        seq = meta["seq"]
+        meta_t = json.loads((taps / f"seq-{seq:05d}.tokens.json").read_text())
+        L, tokens = meta_t["prompt"], np.array(meta_t["tokens"], np.int64)
+        T = len(tokens) - 1
+        name = f"seq-{seq:05d}"
+        for side, props in (("tf", load_props_tf(tf_dir / f"{name}.props.bin")),
+                            ("ref", load_props_ref(ref_dir / f"{name}.props.npy"))):
+            if len(props) != T:
+                raise ValueError(f"{name} {side}: {len(props)} props rows, expected {T}")
+            lens[side][seq] = accept_lengths(props, tokens, L - 1, T - 7)
+    tf, ref = _summarize(lens["tf"], prompts), _summarize(lens["ref"], prompts)
+    rel = {k: {d: tf[k]["tokens_per_cycle"][d] / ref[k]["tokens_per_cycle"][d] - 1 for d in DEPTHS} for k in ref}
+    gated = [k for k in ref if ref[k]["rows"] >= min_rows]
+    ok = bool(gated) and all(abs(rel[k][d]) <= ACCEPT_REL_TOL for k in gated for d in DEPTHS)
+    return {"tf": tf, "ref": ref, "tokens_per_cycle_rel_diff": rel, "tolerance": ACCEPT_REL_TOL,
+            "min_rows": min_rows, "gated_sets": gated, "pass": ok}
 
 
 def main() -> None:
@@ -203,12 +273,26 @@ def main() -> None:
     c.add_argument("--ref", type=Path, required=True, help="directory with seq-NNNNN.{props,logits}.npy")
     c.add_argument("--seqs", default="0..20", help="inclusive ranges and lists: 0..20 or 0..3,7")
     c.add_argument("--out", type=Path, help="also write the JSON report here")
+    c = sub.add_parser("accept", help="acceptance of both sides' proposals against the recorded greedy tokens")
+    c.add_argument("--tf", type=Path, required=True)
+    c.add_argument("--ref", type=Path, required=True)
+    c.add_argument("--taps", type=Path, required=True)
+    c.add_argument("--prompts", type=Path, required=True)
+    c.add_argument("--out", type=Path)
     a = ap.parse_args()
+    if a.cmd == "accept":
+        rep = accept(a.tf, a.ref, a.taps, json.loads(a.prompts.read_text()))
+        text = json.dumps(rep, indent=1) + "\n"
+        if a.out:
+            a.out.write_text(text)
+        print(text, end="")
+        sys.exit(0 if rep["pass"] else 1)
     rep = compare(a.tf, a.ref, parse_seqs(a.seqs))
     text = json.dumps(rep, indent=1) + "\n"
     if a.out:
         a.out.write_text(text)
-    short = {k: rep[k] for k in ("rows", "rows_tf_only", "rows_ref_only", "agreement", "logits", "gate", "pass")}
+    short = {k: rep[k] for k in ("rows", "rows_tf_only", "rows_ref_only", "agreement", "logits", "logits_all_steps",
+                                  "gate", "pass")}
     print(json.dumps(short, indent=1))
     sys.exit(0 if rep["pass"] else 1)
 
