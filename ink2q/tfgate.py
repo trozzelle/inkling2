@@ -92,7 +92,8 @@ def request_body(a, entry: dict) -> dict:
     return body
 
 
-def run_request(a, entry: dict) -> dict:
+def stream_events(a, entry: dict) -> tuple[float, list]:
+    """Send one streamed request; the start time and every (time, SSE line) pair received."""
     headers = {"content-type": "application/json"}
     if getattr(a, "api_key_file", None):
         headers["authorization"] = "Bearer " + a.api_key_file.read_text().strip()
@@ -102,6 +103,11 @@ def run_request(a, entry: dict) -> dict:
     with urllib.request.urlopen(req, timeout=a.timeout) as r:
         for line in r:
             events.append((time.perf_counter(), line.decode("utf-8")))
+    return t0, events
+
+
+def run_request(a, entry: dict) -> dict:
+    t0, events = stream_events(a, entry)
     return {"seq": entry["seq"], **parse_stream(events, t0)}
 
 
