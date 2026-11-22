@@ -6,6 +6,7 @@ first request's rate (the cold one: later requests may be served from the server
 cached_tokens) and the median over all of them, and optionally pairs every request with the server's own `done` log line
 (prompt=, cached=, ttft=) to cross-check the time."""
 import argparse
+import hashlib
 import json
 import re
 import statistics
@@ -16,6 +17,23 @@ from ink2q import tfgate
 WARMUP = {"seq": -1, "messages": [{"role": "user", "content": "Reply with one word."}]}
 WARMUP_MAX_TOKENS = 8
 DONE = re.compile(r"\[tensorfold\] done \S+ prompt=(\d+) cached=(\d+)")
+
+FIRST_QUESTION = "Summarise the main points in one sentence."
+FOLLOW_QUESTIONS = (
+    "Summarise the previous answer in one sentence.",
+    "What is the main uncertainty in that?",
+    "Give one concrete example.",
+)
+EDIT_QUESTIONS = (
+    "List the three most important facts from the document.",
+    "State the document's main conclusion in one sentence.",
+)
+REASK_QUESTIONS = (
+    "What are the key assumptions or limitations in this document?",
+    "Identify the main open question raised by this document.",
+)
+DEFAULT_SCRIPT = "follow,regenerate,edit,follow,reask"
+VALID_OPS = ("follow", "regenerate", "edit", "reask")
 
 
 def request_record(events, t0: float) -> dict:
@@ -162,6 +180,211 @@ def bench_cmd(a) -> None:
         raise SystemExit(1)
 
 
+def _iter_chunks(events):
+    """Yield (time, parsed dict) from (time, dict) or (time, SSE line) pairs."""
+    for t, item in events:
+        if isinstance(item, str):
+            line = item.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                continue
+            d = json.loads(data)
+        else:
+            d = item
+        yield t, d
+
+
+def turn_record(events, t0: float) -> dict:
+    """One turn's timing, token counts and reply from (time, dict | SSE line) pairs and start time."""
+    first = last = finish_at = None
+    usage = None
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    for t, d in _iter_chunks(events):
+        if d.get("error"):
+            raise RuntimeError(f"server error in stream: {d['error']}")
+        if d.get("usage"):
+            usage = d["usage"]
+        for c in d.get("choices") or []:
+            delta = c.get("delta") or {}
+            text = delta.get("content") or ""
+            reason = delta.get("reasoning_content") or delta.get("reasoning") or ""
+            if text:
+                content_parts.append(text)
+            if reason:
+                reasoning_parts.append(reason)
+            if text or reason:
+                first = t if first is None else first
+                last = t
+            if finish_at is None and c.get("finish_reason"):
+                finish_at = t
+    if usage is None:
+        raise RuntimeError("stream carried no usage")
+    if first is not None:
+        ttft_s = first - t0
+    elif finish_at is not None:
+        ttft_s = finish_at - t0
+    else:
+        raise RuntimeError("stream carried neither a text chunk nor a finish chunk")
+    completion_tokens = usage["completion_tokens"]
+    decode_time = None if first is None else last - first
+    decode_tok_s = (
+        (completion_tokens - 1) / decode_time
+        if decode_time is not None and decode_time > 0 and completion_tokens > 1
+        else None
+    )
+    cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+    cached_tokens = 0 if cached is None else cached
+    content = "".join(content_parts)
+    reasoning = "".join(reasoning_parts)
+    reply = content if content else reasoning
+    rec = {
+        "ttft_s": ttft_s,
+        "prompt_tokens": usage["prompt_tokens"],
+        "cached_tokens": cached_tokens,
+        "completion_tokens": completion_tokens,
+        "decode_tok_s": decode_tok_s,
+        "reply": reply,
+        "reply_sha256": hashlib.sha256(reply.encode("utf-8")).hexdigest(),
+    }
+    if content and reasoning:
+        rec["reasoning_sha256"] = hashlib.sha256(reasoning.encode("utf-8")).hexdigest()
+    return rec
+
+
+def first_messages(messages: list[dict], question: str) -> list[dict]:
+    """Copy messages with question appended to the last user message."""
+    out = [dict(m) for m in messages]
+    idx = next((i for i in range(len(out) - 1, -1, -1) if out[i].get("role") == "user"), None)
+    if idx is None:
+        raise ValueError("messages has no user message")
+    body = out[idx].get("content") or ""
+    out[idx]["content"] = f"{body}\n\n{question}" if body else question
+    return out
+
+
+def next_messages(op: str, messages: list[dict], reply: str, question: str) -> list[dict]:
+    """Next request's messages for one conversation operation without mutating `messages`."""
+    out = [dict(m) for m in messages]
+    if op == "follow":
+        return out + [{"role": "assistant", "content": reply}, {"role": "user", "content": question}]
+    if op == "regenerate":
+        return out
+    if op == "edit":
+        idx = next((i for i in range(len(out) - 1, -1, -1) if out[i].get("role") == "user"), None)
+        if idx is None:
+            raise ValueError("messages has no user message")
+        out[idx]["content"] = question
+        return out
+    raise ValueError(f"unknown operation: {op!r}")
+
+
+def first_difference(a: dict, b: dict) -> tuple[str, int] | None:
+    """(label, turn_index) of the first turn whose reply_sha256 differs, or None when every turn matches."""
+    ca = a.get("conversations") or []
+    cb = b.get("conversations") or []
+    for i in range(max(len(ca), len(cb))):
+        if i >= len(ca):
+            return (cb[i].get("label", f"#{i}"), 0)
+        if i >= len(cb):
+            return (ca[i].get("label", f"#{i}"), 0)
+        la, lb = ca[i].get("label", f"#{i}"), cb[i].get("label", f"#{i}")
+        if la != lb:
+            return (la, 0)
+        ta = ca[i].get("turns") or []
+        tb = cb[i].get("turns") or []
+        for j in range(max(len(ta), len(tb))):
+            if j >= len(ta) or j >= len(tb):
+                return (la, j)
+            if "error" in ta[j] or "error" in tb[j]:
+                return (la, j)
+            if ta[j].get("reply_sha256") is None or ta[j].get("reply_sha256") != tb[j].get("reply_sha256"):
+                return (la, j)
+            if ta[j].get("reasoning_sha256") != tb[j].get("reasoning_sha256"):
+                return (la, j)
+    return None
+
+
+def _attempt_turn(ns, entry: dict) -> dict:
+    try:
+        t0, ev = tfgate.stream_events(ns, entry)
+        return turn_record(ev, t0)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def turns_cmd(a) -> None:
+    ops = [s.strip() for s in a.script.split(",") if s.strip()]
+    bad = [op for op in ops if op not in VALID_OPS]
+    if bad:
+        raise SystemExit(f"unknown script operation(s): {', '.join(bad)}")
+    entries = json.loads(a.messages.read_text())
+    ns = argparse.Namespace(base_url=a.base_url, model=a.model, max_tokens=a.max_tokens, temperature=0.0, seed=None,
+                            timeout=a.timeout, api_key_file=a.api_key_file)
+    conversations: list[dict] = []
+    errors: list[dict] = []
+
+    def snapshot() -> dict:
+        return {"base_url": a.base_url, "model": a.model, "script": ops, "max_tokens": a.max_tokens,
+                "conversations": conversations, "errors": errors}
+
+    try:
+        for idx, entry in enumerate(entries):
+            label = entry.get("label") or entry.get("case") or f"seq-{entry.get('seq', idx)}"
+            base_messages = entry["messages"]
+            conv = {"label": label, "turns": []}
+            conversations.append(conv)
+            cur = first_messages(base_messages, FIRST_QUESTION)
+            follow_i = edit_i = reask_i = 0
+            last_reply = ""
+            for step_i, op in enumerate(["first"] + ops):
+                if op == "follow":
+                    q = FOLLOW_QUESTIONS[follow_i % len(FOLLOW_QUESTIONS)]
+                    follow_i += 1
+                    cur = next_messages("follow", cur, last_reply, q)
+                elif op == "regenerate":
+                    cur = next_messages("regenerate", cur, last_reply, "")
+                elif op == "edit":
+                    q = EDIT_QUESTIONS[edit_i % len(EDIT_QUESTIONS)]
+                    edit_i += 1
+                    cur = next_messages("edit", cur, last_reply, q)
+                elif op == "reask":
+                    q = REASK_QUESTIONS[reask_i % len(REASK_QUESTIONS)]
+                    reask_i += 1
+                    cur = first_messages(base_messages, q)
+                rec = {"op": op, **_attempt_turn(ns, {**entry, "messages": cur})}
+                conv["turns"].append(rec)
+                print(json.dumps({"label": label, "turn": step_i, **{k: rec[k] for k in (
+                    "op", "ttft_s", "prompt_tokens", "cached_tokens", "completion_tokens", "decode_tok_s", "error")
+                    if k in rec}}), flush=True)
+                if "error" in rec:
+                    errors.append({"label": label, "turn": step_i, "op": op, "error": rec["error"]})
+                    write_report(a, snapshot())
+                    break
+                last_reply = rec["reply"]
+                write_report(a, snapshot())
+    finally:
+        out = snapshot()
+        write_report(a, out)
+    print(json.dumps({"conversations": len(conversations), "errors": len(errors), "out": str(a.out)}))
+    if errors:
+        raise SystemExit(1)
+
+
+def same_cmd(a) -> None:
+    da = json.loads(a.a.read_text())
+    db = json.loads(a.b.read_text())
+    diff = first_difference(da, db)
+    if diff is None:
+        print(json.dumps({"equal": True, "conversations": len(da.get("conversations") or [])}))
+        return
+    label, turn = diff
+    print(json.dumps({"equal": False, "label": label, "turn": turn}))
+    raise SystemExit(1)
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -179,6 +402,24 @@ def main(argv=None) -> None:
     b.add_argument("--server-log", type=Path, help="the engine's log, to pair each request with its `done` line")
     b.add_argument("--out", type=Path, required=True)
     b.set_defaults(fn=bench_cmd)
+
+    t = sub.add_parser("turns", help="multi-turn conversation script for the prompt cache gate")
+    t.add_argument("--base-url", required=True, help="server or router URL ending in /v1")
+    t.add_argument("--model", required=True)
+    t.add_argument("--messages", type=Path, required=True, help="prefill-messages.json from ink2q.tfchat documents")
+    t.add_argument("--api-key-file", type=Path, help="a file holding the bearer key, when behind a router")
+    t.add_argument("--script", default=DEFAULT_SCRIPT,
+                   help="comma-separated operations after turn 1 (follow, regenerate, edit, reask)")
+    t.add_argument("--max-tokens", type=int, default=128)
+    t.add_argument("--timeout", type=float, default=900.0)
+    t.add_argument("--out", type=Path, required=True)
+    t.set_defaults(fn=turns_cmd)
+
+    s = sub.add_parser("same", help="exit 0 when every turn's reply_sha256 matches between two turns outputs")
+    s.add_argument("--a", type=Path, required=True)
+    s.add_argument("--b", type=Path, required=True)
+    s.set_defaults(fn=same_cmd)
+
     a = ap.parse_args(argv)
     a.fn(a)
 

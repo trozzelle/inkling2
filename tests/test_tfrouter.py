@@ -1,3 +1,4 @@
+import hashlib
 import json
 import threading
 import time
@@ -243,3 +244,166 @@ def test_bench_pairs_only_server_log_lines_written_after_it_starts(tmp_path):
     d = json.loads(out.read_text())
     assert d["warmup"]["server"]["ttft"] == 0.1
     assert [r["server"]["ttft"] for r in d["records"]] == [0.5, 0.5]
+
+
+# ---- turns and same
+
+
+def test_turn_record_reads_cached_tokens_and_reply():
+    events = [(0.50, {"choices": [{"delta": {"content": "Hel"}}]}),
+              (0.60, {"choices": [{"delta": {"content": "lo"}}]}),
+              (0.61, {"choices": [], "usage": {"prompt_tokens": 9000, "completion_tokens": 2,
+                                               "prompt_tokens_details": {"cached_tokens": 8500}}})]
+    rec = tfrouter.turn_record(events, t0=0.0)
+    assert rec["ttft_s"] == 0.50 and rec["cached_tokens"] == 8500 and rec["reply"] == "Hello"
+    assert rec["reply_sha256"] == hashlib.sha256(b"Hello").hexdigest()
+    assert rec["prompt_tokens"] == 9000 and rec["completion_tokens"] == 2
+    assert rec["decode_tok_s"] == pytest.approx(10.0)
+
+
+def test_turn_record_handles_sse_lines_missing_cached_tokens_and_reasoning_only():
+    ev = [(0.05, role_chunk()), (0.40, text_chunk("ok")), (0.40, finish_chunk()), (0.40, usage_chunk(100)), (0.40, sse("[DONE]"))]
+    rec = tfrouter.turn_record(ev, t0=0.0)
+    assert rec["ttft_s"] == pytest.approx(0.40) and rec["cached_tokens"] == 0
+    assert rec["reply"] == "ok" and rec["decode_tok_s"] is None
+
+    rev = [(0.20, {"choices": [{"delta": {"reasoning_content": "th"}}]}),
+           (0.40, {"choices": [{"delta": {"reasoning_content": "ink"}}]}),
+           (0.41, {"choices": [], "usage": {"prompt_tokens": 50, "completion_tokens": 3}})]
+    rrec = tfrouter.turn_record(rev, t0=0.0)
+    assert rrec["ttft_s"] == pytest.approx(0.20) and rrec["reply"] == "think"
+    assert rrec["reply_sha256"] == hashlib.sha256(b"think").hexdigest()
+    assert rrec["decode_tok_s"] == pytest.approx(10.0)
+
+    with pytest.raises(RuntimeError, match="no usage"):
+        tfrouter.turn_record([(0.1, {"choices": [{"delta": {"content": "a"}}]})], 0.0)
+    with pytest.raises(RuntimeError, match="boom"):
+        tfrouter.turn_record([(0.1, {"error": "boom"})], 0.0)
+
+
+def test_next_messages_by_operation():
+    msgs = [{"role": "user", "content": "doc"}]
+    assert tfrouter.next_messages("follow", msgs, "answer", "and then?") == msgs + [
+        {"role": "assistant", "content": "answer"}, {"role": "user", "content": "and then?"}]
+    assert tfrouter.next_messages("regenerate", msgs, "answer", "unused") == msgs
+    assert tfrouter.next_messages("edit", msgs, "answer", "other?") == [{"role": "user", "content": "other?"}]
+    assert msgs == [{"role": "user", "content": "doc"}]
+
+    multi = [{"role": "user", "content": "doc"}, {"role": "assistant", "content": "a1"}, {"role": "user", "content": "q2"}]
+    assert tfrouter.next_messages("edit", multi, "a2", "q2-new") == [
+        {"role": "user", "content": "doc"}, {"role": "assistant", "content": "a1"}, {"role": "user", "content": "q2-new"}]
+    with pytest.raises(ValueError, match="unknown operation"):
+        tfrouter.next_messages("bogus", msgs, "a", "q")
+
+
+def test_first_messages_appends_the_question_to_the_last_user_message():
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "doc"}]
+    assert tfrouter.first_messages(msgs, "Q?") == [
+        {"role": "system", "content": "s"}, {"role": "user", "content": "doc\n\nQ?"}]
+    assert msgs[1]["content"] == "doc"
+    with pytest.raises(ValueError, match="no user message"):
+        tfrouter.first_messages([{"role": "system", "content": "s"}], "Q?")
+
+
+def test_same_names_the_first_differing_turn():
+    a = {"conversations": [{"label": "x", "turns": [{"reply_sha256": "1"}, {"reply_sha256": "2"}]}]}
+    b = {"conversations": [{"label": "x", "turns": [{"reply_sha256": "1"}, {"reply_sha256": "3"}]}]}
+    assert tfrouter.first_difference(a, b) == ("x", 1)
+    assert tfrouter.first_difference(a, a) is None
+
+    c = {"conversations": [{"label": "x", "turns": [{"reply_sha256": "1"}]}]}
+    assert tfrouter.first_difference(a, c) == ("x", 1)
+    d = {"conversations": [{"label": "x", "turns": [{"reply_sha256": "1"}, {"error": "HTTP 500"}]}]}
+    assert tfrouter.first_difference(a, d) == ("x", 1)
+
+
+def test_turns_and_same_cli_through_a_fake_server(tmp_path, capsys):
+    def reply(body):
+        msgs = body["messages"]
+        tag = f"n={len(msgs)}:{msgs[-1]['content'][:16]}"
+        yield role_chunk()
+        yield text_chunk(tag[:4])
+        time.sleep(0.01)
+        yield text_chunk(tag[4:])
+        yield finish_chunk()
+        pt = sum(len(m["content"]) for m in msgs)
+        cached = pt - 10 if len(msgs) > 1 else 0
+        yield sse({"choices": [], "usage": {"prompt_tokens": pt, "completion_tokens": 2,
+                                            "prompt_tokens_details": {"cached_tokens": cached}}})
+        yield sse("[DONE]")
+
+    srv, seen = serve(reply)
+    try:
+        key = tmp_path / "key"
+        key.write_text("tok123\n")
+        msgs = tmp_path / "m.json"
+        msgs.write_text(json.dumps([{"seq": 0, "case": "doc8k", "messages": [{"role": "user", "content": "DOCUMENT"}]}]))
+        out_a = tmp_path / "a.json"
+        out_b = tmp_path / "b.json"
+        tfrouter.main(["turns", "--base-url", f"http://127.0.0.1:{srv.server_port}/v1", "--model", "m",
+                       "--messages", str(msgs), "--api-key-file", str(key), "--max-tokens", "64", "--out", str(out_a)])
+        tfrouter.main(["turns", "--base-url", f"http://127.0.0.1:{srv.server_port}/v1", "--model", "m",
+                       "--messages", str(msgs), "--max-tokens", "64", "--out", str(out_b)])
+    finally:
+        srv.shutdown()
+
+    da = json.loads(out_a.read_text())
+    assert len(da["conversations"]) == 1
+    conv = da["conversations"][0]
+    assert conv["label"] == "doc8k"
+    assert [t["op"] for t in conv["turns"]] == ["first", "follow", "regenerate", "edit", "follow", "reask"]
+    assert all(b["temperature"] == 0.0 and b["max_tokens"] == 64 for _, b in seen)
+    assert seen[0][0] == "Bearer tok123" and seen[6][0] is None
+    assert seen[2][1]["messages"] == seen[1][1]["messages"]
+    assert len(seen[3][1]["messages"]) == 3
+    assert seen[3][1]["messages"][:2] == seen[2][1]["messages"][:2]
+    assert seen[3][1]["messages"][2]["content"] != seen[2][1]["messages"][2]["content"]
+    assert len(seen[5][1]["messages"]) == 1
+    assert seen[5][1]["messages"][0]["content"].startswith("DOCUMENT\n\n")
+    assert seen[5][1]["messages"][0]["content"] != seen[0][1]["messages"][0]["content"]
+
+    tfrouter.main(["same", "--a", str(out_a), "--b", str(out_b)])
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["equal"] is True
+
+    db = json.loads(out_b.read_text())
+    db["conversations"][0]["turns"][3]["reply_sha256"] = "deadbeef"
+    out_b.write_text(json.dumps(db))
+    with pytest.raises(SystemExit) as e:
+        tfrouter.main(["same", "--a", str(out_a), "--b", str(out_b)])
+    assert e.value.code == 1
+    diff_out = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert diff_out == {"equal": False, "label": "doc8k", "turn": 3}
+
+
+def test_turns_records_error_and_exits_nonzero(tmp_path):
+    calls = 0
+
+    def reply(body):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            yield role_chunk()
+            return
+        yield role_chunk()
+        yield text_chunk("ok")
+        yield finish_chunk()
+        yield usage_chunk(20, 0)
+        yield sse("[DONE]")
+
+    srv, _ = serve(reply)
+    try:
+        msgs = tmp_path / "m.json"
+        msgs.write_text(json.dumps([
+            {"seq": 0, "case": "c0", "messages": [{"role": "user", "content": "d0"}]},
+            {"seq": 1, "case": "c1", "messages": [{"role": "user", "content": "d1"}]},
+        ]))
+        out = tmp_path / "r.json"
+        with pytest.raises(SystemExit) as e:
+            tfrouter.main(["turns", "--base-url", f"http://127.0.0.1:{srv.server_port}/v1", "--model", "m",
+                           "--messages", str(msgs), "--script", "follow", "--out", str(out)])
+    finally:
+        srv.shutdown()
+    assert e.value.code == 1
+    d = json.loads(out.read_text())
+    assert len(d["errors"]) == 1 and d["errors"][0]["label"] == "c0" and d["errors"][0]["op"] == "follow"
+    assert len(d["conversations"][1]["turns"]) == 2 and "error" not in d["conversations"][1]["turns"][1]
