@@ -16,6 +16,8 @@
 #      paired comparison against ink2q's kortexa result (bound: 95% upper limit of TensorFold - ink2q KL <= +0.002);
 #   6. prefill --spans --drafts on the 8k prompt at chunks of 4,096 and 2,048 (direct start, for the breakdown); their last-row
 #      digests must agree.
+#   7. last and non-fatal (the shipped pack never takes this fallback): partition 4,095+1 with INKLING_PROMPT_PATH=rows:5,7
+#      (layers 5, global, and 7, local, run their experts on the per-row path, the rest on the tensor-unit chain).
 # Steps 1 to 4 stop the job on the first failure (an identity failure). Step 5 and 6's legs are measurements and gates: a failed
 # leg is recorded, the rest still run, and the job exits 1 at the end if any failed. The previous window's plain tokens and
 # seeded replies are compared informationally (the prompt path changed, so they are not required to match).
@@ -41,7 +43,7 @@ W=$R/reports/tf-m2p3/w2
 OUT=$P3/w2
 PORT=8199
 # the legs run with the settings a server starts with
-unset INKLING_PREFILL_ROWS INKLING_DRAFT_DEPTH INKLING_DRAFT_CONFIDENCE INKLING_DRAFT_BITS INKLING_ROUND_TIMING
+unset INKLING_PREFILL_ROWS INKLING_DRAFT_DEPTH INKLING_DRAFT_CONFIDENCE INKLING_DRAFT_BITS INKLING_ROUND_TIMING INKLING_PROMPT_PATH
 
 # 0. preflight
 mkdir -p $W $OUT $OUT/full-chunk/tf-bin $OUT/full-window/tf-bin
@@ -141,6 +143,7 @@ grep -q '"differ": 0,' $W/exact.log || { echo "exact: differ is not 0"; exit 1; 
 part() {  # part NAME IDS CUT...
   local name=$1 ids=$2; shift 2
   must partition-$name $TF $PACK partition $ids "$@" --drafts
+  grep -q '"partition": "identical"' $W/partition-$name.log || { echo "partition-$name: not reported identical"; exit 1; }
 }
 part c4095-1 $LONG 4095 1 4096
 part c37 $LONG 37 4096
@@ -269,6 +272,13 @@ sys.exit(0 if equal else 1)
 PY
 else
   echo "digests: a prefill leg failed"; FAILED="$FAILED digests"
+fi
+
+# 7. last, non-fatal (the shipped pack never takes this fallback): a mixed prompt path, layers 5 (global) and 7 (local) with their
+# experts on the per-row projections and the rest on the tensor-unit chain, partitioned 4,095+1 against the prefill rows
+if leg partition-mixed-rows57 env INKLING_PROMPT_PATH=rows:5,7 $TF $PACK partition $LONG 4095 1 --drafts; then
+  grep -q '"partition": "identical"' $W/partition-mixed-rows57.log || { echo "partition-mixed-rows57: not reported identical"; FAILED="$FAILED partition-mixed-rows57"; }
+  grep -q '"prompt_path": "rows' $W/partition-mixed-rows57.log || echo "info: partition-mixed-rows57's JSON names no rows prompt_path"
 fi
 
 if [ -n "$FAILED" ]; then
