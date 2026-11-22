@@ -166,3 +166,69 @@ def test_compare_ids_reports_exact_or_the_first_difference():
     assert tfchat.compare_ids([1, 2, 3, 4], [1, 9, 3, 8, 7]) == {
         "exact": False, "first_diff": 1, "differing": 3, "want_length": 4, "got_length": 5}
     assert tfchat.compare_ids([1, 2], [1, 2, 3])["first_diff"] == 2
+
+
+# ---- tfchat: long documents cut to a rendered length
+
+BOS = 2000  # a begin-of-text separator in a raw document stream; stripped, never rendered as markup
+
+
+def render_one_user(p) -> list[int]:
+    """What a template-like renderer gives for a parsed messages list: the effort marker, then the user message."""
+    eff = "0" if p.reasoning_effort == "none" else "0.9"
+    return effort(eff) + seg(SP.user, SP.text, p.messages[-1]["content"])
+
+
+def test_document_messages_on_raw_text_strips_separators_and_keeps_the_default_effort():
+    src = [BOS] + enc("hello") + [BOS] + enc("world")
+    p = tfchat.document_messages(src, SP, dec, {BOS}, 8)
+    assert p.messages == [{"role": "user", "content": "hellow"}]
+    assert p.reasoning_effort is None and p.tools is None
+
+
+def test_document_messages_on_a_chat_stream_cuts_inside_the_user_message_and_keeps_its_effort():
+    src = effort("0") + [SP.user, SP.text] + enc("You are given text")
+    head = len(effort("0")) + 2
+    p = tfchat.document_messages(src, SP, dec, {BOS}, head + 8)
+    assert p.messages == [{"role": "user", "content": "You are "}]
+    assert p.reasoning_effort == "none"
+
+
+def test_document_messages_refuses_a_chat_stream_cut_into_a_model_message():
+    src = effort() + seg(SP.user, SP.text, "q") + [SP.model, SP.text] + enc("answer")
+    with pytest.raises(ValueError, match="not closed by end_sampling"):
+        tfchat.document_messages(src, SP, dec, set(), len(src))
+
+
+def test_document_messages_skips_a_cut_inside_a_character():
+    class Frag:  # a decoder that breaks on odd cuts, as a multibyte character cut in half does
+        def __call__(self, toks):
+            return "\ufffd" if len(toks) % 2 else "ok"
+    assert tfchat.document_messages(list(range(10)), SP, Frag(), set(), 5) is None
+    assert tfchat.document_messages(list(range(10)), SP, Frag(), set(), 4).messages[0]["content"] == "ok"
+
+
+def test_fit_document_walks_the_cut_to_the_exact_rendered_length():
+    src = [BOS] + enc("abcdefghij" * 40)  # 401 tokens
+    overhead = len(render_one_user(tfchat.document_messages(src, SP, dec, {BOS}, 1)))
+    target = overhead + 100 + 1  # the opener adds one
+    k, p, got = tfchat.fit_document(src, SP, dec, {BOS}, render_one_user, target)
+    assert len(got) + 1 == target and len(p.messages[0]["content"]) == 100 and k == 101
+
+
+def test_fit_document_follows_retokenization_that_changes_the_length():
+    def render(p):  # every 'x' renders as two tokens, as a merge undone by retokenizing might
+        return render_one_user(p) + [7] * p.messages[-1]["content"].count("x")
+    src = [BOS] + enc("axbxcxdxexfxgxhxixjx" * 10)
+    k, p, got = tfchat.fit_document(src, SP, dec, {BOS}, render, 150)
+    assert len(got) + 1 == 150 and k < 150
+
+
+def test_fit_document_gives_the_longest_fit_below_an_unreachable_target():
+    def render(p):  # odd texts render one token longer, so one length is never hit
+        n = len(p.messages[-1]["content"])
+        return render_one_user(p) + [7] * (n % 2)
+    src = [BOS] + enc("a" * 400)
+    base = len(render_one_user(tfchat.document_messages(src, SP, dec, {BOS}, 1)))
+    k, p, got = tfchat.fit_document(src, SP, dec, {BOS}, render, base + 1 + 101)  # n(L=100)=base+101, n(L=101)=base+103
+    assert len(got) + 1 == base + 101 and len(p.messages[0]["content"]) == 100

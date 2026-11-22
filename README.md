@@ -76,7 +76,7 @@ git. Copy the example and fill it in:
 | `ink2q/tfpack.py` | A TensorFold model directory from the source and an EXL3 pack |
 | `ink2q/tflayers.py`, `tfexperts.py`, `tftaps.py`, `tfio.py` | Per-layer, per-expert and drafter-tap references for the engine's outputs |
 | `ink2q/tfdspark.py`, `tfaccept.py`, `tfdepth.py` | Drafter agreement, draft acceptance and draft-depth simulation |
-| `ink2q/tfchat.py`, `tfprompts.py`, `tfgate.py` | Gate prompts and the served decode-rate client |
+| `ink2q/tfchat.py`, `tfprompts.py`, `tfgate.py`, `tfrouter.py` | Gate prompts (incl. the 8k prefill prompts) and the served decode-rate and router prefill-rate clients |
 | `scripts/` | One-off measurement and diagnostic scripts |
 | `scripts/studio/` | Inference-Mac jobs (see above) |
 | `tests/` | pytest suite |

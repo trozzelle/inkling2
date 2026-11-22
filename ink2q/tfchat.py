@@ -155,6 +155,103 @@ def compare_ids(want: list[int], got: list[int]) -> dict:
             "got_length": len(got)}
 
 
+def document_messages(src, sp: Specials, decode: Callable[[list[int]], str], strip: set[int], k: int) -> Parsed | None:
+    """Messages for the first k tokens of a document stream. A rendered chat stream (it opens with a system or user
+    header) is cut inside its last message, which must be a user message: its text is the tokens so far, and its
+    system messages and effort marker are kept. Any other stream is raw text: the `strip` tokens (begin-of-text
+    separators and other specials, which would render as literal markup) are dropped and the rest is one user
+    message under the template's default effort. None when the cut falls inside a character."""
+    head = [int(t) for t in src[:k]]
+    if head and head[0] in (sp.system, sp.user):
+        p = parse_messages(head + [sp.end_message, sp.model], sp, decode)
+        if not p.messages or p.messages[-1]["role"] != "user":
+            raise ValueError("the cut message is not a user message")
+    else:
+        p = Parsed([{"role": "user", "content": decode([t for t in head if t not in strip])}], None, None, True)
+    return None if "\ufffd" in p.messages[-1]["content"] else p
+
+
+def fit_document(src, sp: Specials, decode, strip: set[int], render: Callable[[Parsed], list[int]], target: int):
+    """(k, parsed, rendered ids) for the cut of src whose rendered ids plus the opener are exactly `target` long.
+    Retokenizing changes the length by a few tokens, so the cut walks by the miss until it hits; when it cycles
+    without hitting, the longest fit below the target (the caller sees the length)."""
+    k, seen, best = min(target, len(src)), set(), None
+    while k >= 1 and k not in seen:
+        seen.add(k)
+        p = document_messages(src, sp, decode, strip, k)
+        if p is None:
+            k -= 1
+            continue
+        got = render(p)
+        n = len(got) + 1
+        if n == target:
+            return k, p, got
+        if n < target and (best is None or n > best[0]):
+            best = (n, k, p, got)
+        k = min(k + target - n, len(src))
+    if best is None:
+        raise ValueError(f"no cut of the document renders to {target} ids or fewer")
+    return best[1:]
+
+
+def documents_cmd(a) -> None:
+    from transformers import AutoTokenizer
+    from ink2q.tokens import load_manifest, load_tokens
+    tok = AutoTokenizer.from_pretrained(str(a.source))
+    sp = Specials.from_vocab(tok.get_added_vocab())
+    strip = set(tok.get_added_vocab().values())
+
+    def decode(toks):
+        return tok.decode(toks, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+
+    seqs = man = None
+    ids_dir = a.out_dir / "prefill-ids"
+    ids_dir.mkdir(parents=True, exist_ok=True)
+    out, report, paths = [], [], []
+    for seq, spec in enumerate(a.doc):
+        label, _, src_spec = spec.partition("=")
+        kind, _, ref = src_spec.partition(":")
+        if kind == "case":
+            if seqs is None:
+                seqs, man = load_tokens(a.tokens), load_manifest(a.manifest)
+            src = [int(t) for t in seqs[next(i for i, m in enumerate(man) if m["case"] == ref)]]
+        elif kind == "ids":
+            src = [int(t) for t in json.loads(Path(ref).read_text())]
+        else:
+            raise SystemExit(f"--doc {spec!r}: expected LABEL=case:NAME or LABEL=ids:PATH")
+        k, p, got = fit_document(src, sp, decode, strip, lambda q: render_ids(tok, q.messages, q.tools, q.reasoning_effort),
+                                 a.target)
+        ids = got + [sp.model]  # the opener the template never renders, as the drafted gate's prompts end
+        back = parse_messages(ids, sp, decode)  # the ids must parse back to the messages that rendered them
+        again = render_ids(tok, back.messages, back.tools, back.reasoning_effort)
+        check = compare_ids(got, again)
+        check["messages_roundtrip"] = back.messages == p.messages and back.tools == p.tools \
+            and back.reasoning_effort == p.reasoning_effort and back.opener
+        row = {"seq": seq, "label": label, "source": src_spec, "source_tokens": len(src), "cut_tokens": k,
+               "ids_length": len(ids), "rendered_length": len(got), "opener_not_rendered": True,
+               "reasoning_effort": p.reasoning_effort, **check}
+        report.append(row)
+        entry = {"seq": seq, "set": "prefill8k", "case": label, "messages": p.messages}
+        if p.tools:
+            entry["tools"] = p.tools
+        if p.reasoning_effort is not None:
+            entry["reasoning_effort"] = p.reasoning_effort
+        entry["ids_length"], entry["rendered_length"] = len(ids), len(got)
+        out.append(entry)
+        path = (ids_dir / f"seq-{seq:05d}.json").resolve()
+        path.write_text(json.dumps(ids))
+        paths.append(str(path))
+    (ids_dir / "index.txt").write_text("\n".join(paths) + "\n")
+    (a.out_dir / "prefill-messages.json").write_text(json.dumps(out, ensure_ascii=False, indent=1) + "\n")
+    (a.out_dir / "prefill-report.json").write_text(json.dumps(report, indent=1) + "\n")
+    for r in report:
+        print(json.dumps(r), flush=True)
+    good = [r for r in report if r["exact"] and r["messages_roundtrip"] and r["ids_length"] == a.target]
+    print(json.dumps({"prompts": len(report), "exact_at_target": len(good), "target": a.target, "out": str(a.out_dir)}))
+    if len(good) != len(report):
+        raise SystemExit(1)
+
+
 def messages_cmd(a) -> None:
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(str(a.source))
@@ -201,6 +298,17 @@ def main(argv=None) -> None:
     s.add_argument("--source", type=Path, required=True, help="source model dir with the tokenizer and chat template")
     s.add_argument("--out", type=Path, required=True)
     s.set_defaults(fn=messages_cmd)
+    d = sub.add_parser("documents", help="long documents (held-out sequences, raw id lists) -> chat messages whose ids "
+                                         "plus the opener are exactly --target long")
+    d.add_argument("--source", type=Path, required=True, help="source model dir with the tokenizer and chat template")
+    d.add_argument("--doc", action="append", required=True, metavar="LABEL=case:NAME|ids:PATH",
+                   help="a held-out case (needs --tokens, --manifest) or a JSON id list; repeat, in seq order")
+    d.add_argument("--tokens", type=Path, help="held-out safetensors, for case: documents")
+    d.add_argument("--manifest", type=Path, help="its manifest, for case: documents")
+    d.add_argument("--target", type=int, default=8192, help="ids length with the opener")
+    d.add_argument("--out-dir", type=Path, required=True,
+                   help="gets prefill-messages.json, prefill-report.json and prefill-ids/ (seq-NNNNN.json, index.txt)")
+    d.set_defaults(fn=documents_cmd)
     a = ap.parse_args(argv)
     a.fn(a)
 
