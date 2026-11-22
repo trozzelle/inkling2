@@ -8,8 +8,10 @@
 #      absorb); the bench prompt (116 tokens) and the chat prompt (934), each with and without drafts;
 #   3. the 8k prompt at chunks of 2,048 and 4,096 rows, and at 4,096 with the draft head: per-class GPU time against chunk size, which
 #      tests whether the per-row stages' cost per token is chunk-size independent.
-# The long chunks run last: a 512-row chunk is one command buffer of about 8 s of GPU time today, so a 4,096-row chunk may take a
-# minute; if such a command buffer is killed or resets the GPU, the legs before it are already in.
+# A forward's layers go to the GPU in command buffers of bounded work (about a second of GPU time today: a layer at a time from 2,048
+# rows up), so none nears the 15.6 s at which one has been killed; each leg's `max_buffer_ms` is the longest it used. The long chunks
+# still run last, so a failure there leaves the legs before it in. The 8k legs must all end in the same `h_digest` (the last row's
+# hidden state): rows are independent, so no chunk size, command buffer split or draft head changes it.
 # Every leg is a measurement: a failed leg is recorded and the rest still run, and the job exits 1 at the end if any failed. Each
 # leg loads the model on its own. `prefill` runs a 16-row window first, as the server's warm-up does; greedy does not, so its
 # prompt_ms includes the weights' first touch (about 1 s of 126 s on the 8k prompt in the decode window).
@@ -104,6 +106,25 @@ for c in 2048 4096; do
   leg prefill-c$c $TF $PACK prefill $LONG --spans --chunk $c
 done
 leg prefill-drafts-c4096 $TF $PACK prefill $LONG --spans --drafts --chunk 4096
+
+# the 8k legs' last-row digests agree
+digests() {
+  python3 - $W <<'PY'
+import glob, json, os, re, sys
+legs = {}
+for path in sorted(glob.glob(os.path.join(sys.argv[1], "prefill-*.log"))):
+    name = os.path.basename(path)[:-4]
+    if not re.fullmatch(r"prefill-(drafts-)?c\d+", name):
+        continue
+    rows = [json.loads(l) for l in open(path, errors="replace") if l.startswith('{"prompt_tokens"')]
+    if rows and "h_digest" in rows[-1]:
+        legs[name] = rows[-1]["h_digest"]
+equal = len(legs) >= 2 and len(set(legs.values())) == 1
+print(json.dumps({"legs": legs, "equal": equal}))
+sys.exit(0 if equal else 1)
+PY
+}
+digests | tee $W/digests.json || { echo "digests: the 8k legs do not all end in one h_digest (see digests.json)"; FAILED="$FAILED digests"; }
 
 # the legs' result lines in one file, with the unspanned remainder and the cost a token (informational)
 python3 - $W <<'PY' || true
