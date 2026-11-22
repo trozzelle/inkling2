@@ -136,3 +136,68 @@ def test_bench_through_a_fake_router_warms_up_then_runs_round_robin_and_writes_t
     assert p0["requests"] == 3 and p0["first_tok_s"] == pytest.approx(400 / d["records"][0]["prefill_s"])
     assert 0 < p0["median_tok_s"] and all(r["basis"] == "text" for r in d["records"])
     assert "per_prompt" in capsys.readouterr().out.splitlines()[-1]
+
+
+def test_bench_records_a_failed_request_keeps_the_finished_ones_and_exits_nonzero(tmp_path):
+    calls = []
+
+    def reply(body):
+        calls.append(body)
+        n = len(calls)
+        if n == 3:  # the third request gets a stream with no text and no finish chunk
+            yield role_chunk()
+            yield usage_chunk(400, 0)
+            return
+        yield role_chunk()
+        yield text_chunk()
+        yield finish_chunk()
+        yield usage_chunk(400 if len(body["messages"][0]["content"]) > 50 else 12, 0)
+        yield sse("[DONE]")
+
+    srv, seen = serve(reply)
+    try:
+        key = tmp_path / "key"
+        key.write_text("k")
+        msgs = tmp_path / "m.json"
+        msgs.write_text(json.dumps([{"seq": i, "case": f"p{i}", "ids_length": 401, "rendered_length": 400,
+                                     "messages": [{"role": "user", "content": "x" * 100}]} for i in range(2)]))
+        out = tmp_path / "r.json"
+        with pytest.raises(SystemExit) as e:
+            tfrouter.main(["bench", "--base-url", f"http://127.0.0.1:{srv.server_port}/v1", "--model", "m",
+                           "--messages", str(msgs), "--api-key-file", str(key), "--requests", "2", "--out", str(out)])
+    finally:
+        srv.shutdown()
+    assert e.value.code == 1
+    d = json.loads(out.read_text())
+    assert len(d["records"]) == 4 and len(d["errors"]) == 1  # warm-up was call 1; call 3 is the second 8k-style request
+    assert d["errors"][0]["seq"] == 1 and d["errors"][0]["request"] == 0 and "neither" in d["errors"][0]["error"]
+    assert [p["requests"] for p in d["per_prompt"]] == [2, 1]  # failed request left out of the rates
+    assert not (tmp_path / "r.json.tmp").exists()
+
+
+def test_bench_survives_an_http_error_and_writes_the_report_before_exiting(tmp_path):
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["content-length"]))
+            self.send_response(500)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        key = tmp_path / "key"
+        key.write_text("k")
+        msgs = tmp_path / "m.json"
+        msgs.write_text(json.dumps([{"seq": 0, "case": "p", "messages": [{"role": "user", "content": "x"}]}]))
+        out = tmp_path / "r.json"
+        with pytest.raises(SystemExit):
+            tfrouter.main(["bench", "--base-url", f"http://127.0.0.1:{srv.server_port}/v1", "--model", "m",
+                           "--messages", str(msgs), "--api-key-file", str(key), "--requests", "1", "--out", str(out)])
+    finally:
+        srv.shutdown()
+    d = json.loads(out.read_text())
+    assert len(d["errors"]) == 2 and "HTTPError" in d["errors"][0]["error"]  # the warm-up and the one request
+    assert d["per_prompt"][0]["requests"] == 0 and d["per_prompt"][0]["first_tok_s"] is None

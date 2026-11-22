@@ -88,36 +88,65 @@ def summarize(prompts: list[dict], records: list[dict]) -> dict:
     return {"per_prompt": per, "prompt_token_mismatches": mismatches}
 
 
+def attempt(ns, entry: dict) -> dict:
+    """One streamed request as a record, or {"error": text} when it fails (HTTP error, timeout, malformed stream)."""
+    try:
+        t0, ev = tfgate.stream_events(ns, entry)
+        return request_record(ev, t0)
+    except Exception as e:  # a failed request is a result, not a reason to lose the finished ones
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def report(a, entries: list[dict], warm: dict, records: list[dict]) -> dict:
+    """The report so far: failed requests are listed under `errors` and left out of the rates."""
+    good = [r for r in records if "error" not in r]
+    prompts = [{k: e.get(k) for k in ("seq", "case", "ids_length", "rendered_length")} for e in entries]
+    out = {"base_url": a.base_url, "model": a.model, "requests_per_prompt": a.requests, "order": a.order,
+           "max_tokens": a.max_tokens, "warmup": warm, **summarize(prompts, good),
+           "errors": [{"seq": r["seq"], "request": r["request"], "error": r["error"]} for r in records if "error" in r]
+           + ([{"seq": -1, "request": 0, "error": warm["error"]}] if "error" in warm else []),
+           "records": records}
+    if a.server_log and a.server_log.exists():
+        sent = [r for r in [warm] + records if "error" not in r]
+        log = done_lines(a.server_log.read_text(errors="replace"))
+        for rec, hit in zip(sent, pair_with_log(sent, log)):
+            rec["server"] = hit
+            if hit and hit["ttft"]:
+                rec["server_ttft_ratio"] = rec["prefill_s"] / hit["ttft"]
+    return out
+
+
+def write_report(a, out: dict) -> None:
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = a.out.with_name(a.out.name + ".tmp")
+    tmp.write_text(json.dumps(out, indent=1) + "\n")
+    tmp.replace(a.out)
+
+
 def bench_cmd(a) -> None:
     entries = json.loads(a.messages.read_text())
     ns = argparse.Namespace(base_url=a.base_url, model=a.model, max_tokens=a.max_tokens, temperature=0.0, seed=None,
                             timeout=a.timeout, api_key_file=a.api_key_file)
-    t0, ev = tfgate.stream_events(argparse.Namespace(**{**vars(ns), "max_tokens": WARMUP_MAX_TOKENS}), WARMUP)
-    warm = request_record(ev, t0)
-    print(json.dumps({"warmup": {k: warm[k] for k in ("prompt_tokens", "prefill_s")}}), flush=True)
+    warm = attempt(argparse.Namespace(**{**vars(ns), "max_tokens": WARMUP_MAX_TOKENS}), WARMUP)
+    print(json.dumps({"warmup": {k: warm[k] for k in ("prompt_tokens", "prefill_s", "error") if k in warm}}), flush=True)
     order = [(e, i) for i in range(a.requests) for e in entries] if a.order == "round-robin" \
         else [(e, i) for e in entries for i in range(a.requests)]
     records = []
-    for entry, i in order:
-        t0, ev = tfgate.stream_events(ns, entry)
-        rec = {"seq": entry["seq"], "request": i, **request_record(ev, t0)}
-        records.append(rec)
-        print(json.dumps({k: rec[k] for k in ("seq", "request", "prompt_tokens", "cached_tokens", "basis", "prefill_s",
-                                                "prefill_tok_s")}), flush=True)
-    prompts = [{k: e.get(k) for k in ("seq", "case", "ids_length", "rendered_length")} for e in entries]
-    out = {"base_url": a.base_url, "model": a.model, "requests_per_prompt": a.requests, "order": a.order,
-           "max_tokens": a.max_tokens, "warmup": warm, **summarize(prompts, records), "records": records}
-    if a.server_log:
-        log = done_lines(a.server_log.read_text(errors="replace"))
-        for rec, hit in zip([warm] + records, pair_with_log([warm] + records, log)):
-            rec["server"] = hit
-            if hit and hit["ttft"]:
-                rec["server_ttft_ratio"] = rec["prefill_s"] / hit["ttft"]
-    a.out.parent.mkdir(parents=True, exist_ok=True)
-    a.out.write_text(json.dumps(out, indent=1) + "\n")
+    try:
+        for entry, i in order:
+            rec = {"seq": entry["seq"], "request": i, **attempt(ns, entry)}
+            records.append(rec)
+            print(json.dumps({k: rec[k] for k in ("seq", "request", "prompt_tokens", "cached_tokens", "basis", "prefill_s",
+                                                    "prefill_tok_s", "error") if k in rec}), flush=True)
+            write_report(a, report(a, entries, warm, records))  # finished measurements survive whatever comes next
+    finally:
+        out = report(a, entries, warm, records)
+        write_report(a, out)
     print(json.dumps({"per_prompt": [{k: p[k] for k in ("case", "first_tok_s", "median_tok_s", "median_uncached_tok_s")}
                                      for p in out["per_prompt"]],
-                      "prompt_token_mismatches": len(out["prompt_token_mismatches"])}))
+                      "prompt_token_mismatches": len(out["prompt_token_mismatches"]), "errors": len(out["errors"])}))
+    if out["errors"]:
+        raise SystemExit(1)
 
 
 def main(argv=None) -> None:

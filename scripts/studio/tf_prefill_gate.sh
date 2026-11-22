@@ -44,7 +44,7 @@ PORT=8199
 unset INKLING_PREFILL_ROWS INKLING_DRAFT_DEPTH INKLING_DRAFT_CONFIDENCE INKLING_DRAFT_BITS INKLING_ROUND_TIMING
 
 # 0. preflight
-mkdir -p $W $OUT
+mkdir -p $W $OUT $OUT/full-chunk/tf-bin $OUT/full-window/tf-bin
 for f in "$UV" "$TF" "$KERNELS" "$TF_FORK/REVISION" "$PACK/config.json" "$PACK/mtp.safetensors" "$LONG" "$PROMPTS/ids/index.txt" \
          "$PMSG" "$PREPORT" "$PIDS/index.txt" "$L/ids.json" "$L/ref.npy" "$L/floor.npy" "$FIDS/index.txt" "$D/heldout.safetensors" \
          "$D/heldout_manifest.json" "$R/teacher/heldout/done.json" "$REF" "$R/source"; do
@@ -234,7 +234,7 @@ fidelity() {  # fidelity NAME [TF flags...]
 }
 finals() {  # finals NAME [TF flags...]
   local name=$1 f=$OUT/full-$1; shift
-  mkdir -p $f/tf-bin
+  [ -d $f/tf-bin ] || { echo "finals: missing $f/tf-bin (preflight creates it)"; exit 1; }
   leg finals-$name $TF $PACK finals $FIDS/index.txt $f/tf-bin "$@" || return 0
   leg finals-import-$name $UV run python -m ink2q.tfio finals --src $f/tf-bin --out $f/tf || return 0
   leg evaluate-$name $UV run python -m ink2q.evaluate --source $R/source --tokens $D/heldout.safetensors \
