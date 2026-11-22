@@ -25,7 +25,7 @@ PROMPTS=$INK2Q_WORK/tf-m2p0
 LONG=$INK2Q_WORK/tf-m2p1-long8k.json
 W=$R/reports/tf-m2p3/w1
 # the legs run with the settings a server starts with
-unset INKLING_PREFILL_ROWS INKLING_DRAFT_DEPTH INKLING_DRAFT_CONFIDENCE INKLING_DRAFT_BITS
+unset INKLING_PREFILL_ROWS INKLING_DRAFT_DEPTH INKLING_DRAFT_CONFIDENCE INKLING_DRAFT_BITS INKLING_ROUND_TIMING INKLING_PROMPT_PATH
 
 ids_len() {  # ids_len FILE: the number of token ids in a JSON list of ints (nothing printed when the file is not one)
   python3 -c "

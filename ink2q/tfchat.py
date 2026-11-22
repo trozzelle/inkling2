@@ -160,9 +160,15 @@ def document_messages(src, sp: Specials, decode: Callable[[list[int]], str], str
     header) is cut inside its last message, which must be a user message: its text is the tokens so far, and its
     system messages and effort marker are kept. Any other stream is raw text: the `strip` tokens (begin-of-text
     separators and other specials, which would render as literal markup) are dropped and the rest is one user
-    message under the template's default effort. None when the cut falls inside a character."""
+    message under the template's default effort. None when the cut falls inside a character, or in a chat stream
+    between messages (on or just after a header, or just after a message's end) rather than inside one's text."""
     head = [int(t) for t in src[:k]]
     if head and head[0] in (sp.system, sp.user):
+        kinds = (sp.text, sp.thinking, sp.xml, sp.image, sp.invoke_json)
+        marks = kinds + (sp.user, sp.model, sp.system, sp.tool, sp.end_message, sp.end_sampling)
+        last = max(i for i, t in enumerate(head) if t in marks)
+        if head[last] not in kinds or last == len(head) - 1:
+            return None
         p = parse_messages(head + [sp.end_message, sp.model], sp, decode)
         if not p.messages or p.messages[-1]["role"] != "user":
             raise ValueError("the cut message is not a user message")
@@ -212,9 +218,14 @@ def documents_cmd(a) -> None:
         label, _, src_spec = spec.partition("=")
         kind, _, ref = src_spec.partition(":")
         if kind == "case":
+            if a.tokens is None or a.manifest is None:
+                raise SystemExit(f"--doc {spec!r}: a case: document needs --tokens and --manifest")
             if seqs is None:
                 seqs, man = load_tokens(a.tokens), load_manifest(a.manifest)
-            src = [int(t) for t in seqs[next(i for i, m in enumerate(man) if m["case"] == ref)]]
+            i = next((i for i, m in enumerate(man) if m["case"] == ref), None)
+            if i is None:
+                raise SystemExit(f"--doc {spec!r}: no case {ref!r} in {a.manifest}")
+            src = [int(t) for t in seqs[i]]
         elif kind == "ids":
             src = [int(t) for t in json.loads(Path(ref).read_text())]
         else:

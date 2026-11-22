@@ -75,9 +75,9 @@ def summarize(prompts: list[dict], records: list[dict]) -> dict:
         recs = [r for r in records if r["seq"] == p["seq"]]
         served = sorted({r["prompt_tokens"] for r in recs})
         rates = [r["prefill_tok_s"] for r in recs]
-        fresh = [r["prefill_tok_s"] for r in recs if not r["cached_tokens"]]
+        fresh = [r["prefill_tok_s"] for r in recs if r["cached_tokens"] == 0]  # None: the server did not say
         per.append({"seq": p["seq"], "case": p["case"], "requests": len(recs), "prompt_tokens": served,
-                    "first_tok_s": rates[0] if rates else None,
+                    "first_tok_s": rates[0] if recs and recs[0]["request"] == 0 else None,  # None: the cold one failed
                     "median_tok_s": statistics.median(rates) if rates else None,
                     "uncached_requests": len(fresh), "median_uncached_tok_s": statistics.median(fresh) if fresh else None,
                     "cached_tokens": [r["cached_tokens"] for r in recs]})
@@ -97,8 +97,18 @@ def attempt(ns, entry: dict) -> dict:
         return {"error": f"{type(e).__name__}: {e}"}
 
 
-def report(a, entries: list[dict], warm: dict, records: list[dict]) -> dict:
-    """The report so far: failed requests are listed under `errors` and left out of the rates."""
+def log_since(path: Path, offset: int) -> str:
+    """The log's text from byte `offset` on (all of it when the log has since been cut shorter than that)."""
+    with path.open("rb") as f:
+        if f.seek(0, 2) < offset:
+            offset = 0
+        f.seek(offset)
+        return f.read().decode(errors="replace")
+
+
+def report(a, entries: list[dict], warm: dict, records: list[dict], log_from: int = 0) -> dict:
+    """The report so far: failed requests are listed under `errors` and left out of the rates. The server log is read
+    from byte `log_from` on, so lines from before this run are never paired."""
     good = [r for r in records if "error" not in r]
     prompts = [{k: e.get(k) for k in ("seq", "case", "ids_length", "rendered_length")} for e in entries]
     out = {"base_url": a.base_url, "model": a.model, "requests_per_prompt": a.requests, "order": a.order,
@@ -108,7 +118,7 @@ def report(a, entries: list[dict], warm: dict, records: list[dict]) -> dict:
            "records": records}
     if a.server_log and a.server_log.exists():
         sent = [r for r in [warm] + records if "error" not in r]
-        log = done_lines(a.server_log.read_text(errors="replace"))
+        log = done_lines(log_since(a.server_log, log_from))
         for rec, hit in zip(sent, pair_with_log(sent, log)):
             rec["server"] = hit
             if hit and hit["ttft"]:
@@ -127,20 +137,23 @@ def bench_cmd(a) -> None:
     entries = json.loads(a.messages.read_text())
     ns = argparse.Namespace(base_url=a.base_url, model=a.model, max_tokens=a.max_tokens, temperature=0.0, seed=None,
                             timeout=a.timeout, api_key_file=a.api_key_file)
+    log_from = a.server_log.stat().st_size if a.server_log and a.server_log.exists() else 0
     warm = attempt(argparse.Namespace(**{**vars(ns), "max_tokens": WARMUP_MAX_TOKENS}), WARMUP)
     print(json.dumps({"warmup": {k: warm[k] for k in ("prompt_tokens", "prefill_s", "error") if k in warm}}), flush=True)
     order = [(e, i) for i in range(a.requests) for e in entries] if a.order == "round-robin" \
         else [(e, i) for e in entries for i in range(a.requests)]
     records = []
+    if "error" in warm:  # the router is down, refusing the key or hung: no long request would fare better
+        order = []
     try:
         for entry, i in order:
             rec = {"seq": entry["seq"], "request": i, **attempt(ns, entry)}
             records.append(rec)
             print(json.dumps({k: rec[k] for k in ("seq", "request", "prompt_tokens", "cached_tokens", "basis", "prefill_s",
                                                     "prefill_tok_s", "error") if k in rec}), flush=True)
-            write_report(a, report(a, entries, warm, records))  # finished measurements survive whatever comes next
+            write_report(a, report(a, entries, warm, records, log_from))  # finished measurements survive whatever comes next
     finally:
-        out = report(a, entries, warm, records)
+        out = report(a, entries, warm, records, log_from)
         write_report(a, out)
     print(json.dumps({"per_prompt": [{k: p[k] for k in ("case", "first_tok_s", "median_tok_s", "median_uncached_tok_s")}
                                      for p in out["per_prompt"]],

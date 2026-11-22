@@ -200,6 +200,14 @@ def test_document_messages_refuses_a_chat_stream_cut_into_a_model_message():
         tfchat.document_messages(src, SP, dec, set(), len(src))
 
 
+def test_document_messages_skips_a_chat_stream_cut_between_messages():
+    first = effort("0") + seg(SP.user, SP.text, "abc")
+    src = first + seg(SP.user, SP.text, "defg")
+    for k in (len(first), len(first) + 1, len(first) + 2):  # after an end_message, after a header, after its marker
+        assert tfchat.document_messages(src, SP, dec, set(), k) is None
+    assert tfchat.document_messages(src, SP, dec, set(), len(first) + 4).messages[-1] == {"role": "user", "content": "de"}
+
+
 def test_document_messages_skips_a_cut_inside_a_character():
     class Frag:  # a decoder that breaks on odd cuts, as a multibyte character cut in half does
         def __call__(self, toks):

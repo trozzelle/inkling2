@@ -46,8 +46,8 @@ def test_request_record_falls_back_to_the_finish_chunk_when_no_text_streams_and_
         tfrouter.request_record([(0.1, role_chunk()), (0.2, usage_chunk(5))], 0.0)
 
 
-def rec(seq, tok_s, cached=0, pt=8191):
-    return {"seq": seq, "prompt_tokens": pt, "prefill_tok_s": tok_s, "cached_tokens": cached}
+def rec(seq, tok_s, cached=0, pt=8191, request=0):
+    return {"seq": seq, "request": request, "prompt_tokens": pt, "prefill_tok_s": tok_s, "cached_tokens": cached}
 
 
 def test_summarize_reports_first_median_and_uncached_median_per_prompt_and_flags_prompt_token_mismatches():
@@ -62,6 +62,16 @@ def test_summarize_reports_first_median_and_uncached_median_per_prompt_and_flags
     assert b["first_tok_s"] == 900 and b["median_tok_s"] == 910 and b["prompt_tokens"] == [8000]
     assert s["prompt_token_mismatches"] == [{"seq": 1, "case": "b", "server_prompt_tokens": [8000],
                                              "rendered_length": 8191, "ids_length": 8192}]
+
+
+def test_summarize_counts_a_request_without_cached_tokens_as_unknown_not_uncached():
+    s = tfrouter.summarize([{"seq": 0, "case": "a"}], [rec(0, 1000, cached=None), rec(0, 5000, cached=None)])
+    assert s["per_prompt"][0]["uncached_requests"] == 0 and s["per_prompt"][0]["median_uncached_tok_s"] is None
+
+
+def test_summarize_gives_no_first_rate_when_the_first_request_failed():
+    s = tfrouter.summarize([{"seq": 0, "case": "a"}], [rec(0, 5000, cached=8190, request=1), rec(0, 1000, request=2)])
+    assert s["per_prompt"][0]["first_tok_s"] is None and s["per_prompt"][0]["median_tok_s"] == 3000
 
 
 LOG = """[tensorfold] listening
@@ -199,5 +209,37 @@ def test_bench_survives_an_http_error_and_writes_the_report_before_exiting(tmp_p
     finally:
         srv.shutdown()
     d = json.loads(out.read_text())
-    assert len(d["errors"]) == 2 and "HTTPError" in d["errors"][0]["error"]  # the warm-up and the one request
+    assert d["errors"] == [{"seq": -1, "request": 0, "error": d["warmup"]["error"]}]  # a failed warm-up sends nothing more
+    assert "HTTPError" in d["warmup"]["error"] and d["records"] == []
     assert d["per_prompt"][0]["requests"] == 0 and d["per_prompt"][0]["first_tok_s"] is None
+
+
+def test_bench_pairs_only_server_log_lines_written_after_it_starts(tmp_path):
+    log = tmp_path / "server.log"
+    log.write_text("[tensorfold] done chatcmpl-a prompt=12 cached=0 ttft=9.0\n"  # an earlier run: its warm-up, a long one
+                   "[tensorfold] done chatcmpl-b prompt=400 cached=0 ttft=99.0\n")
+
+    def reply(body):
+        long = len(body["messages"][0]["content"]) > 50
+        with log.open("a") as f:
+            f.write(f"[tensorfold] done chatcmpl-x prompt={400 if long else 12} cached=0 ttft={0.5 if long else 0.1}\n")
+        yield role_chunk()
+        yield text_chunk()
+        yield finish_chunk()
+        yield usage_chunk(400 if long else 12, 0)
+        yield sse("[DONE]")
+
+    srv, _ = serve(reply)
+    try:
+        key = tmp_path / "key"
+        key.write_text("k")
+        msgs = tmp_path / "m.json"
+        msgs.write_text(json.dumps([{"seq": 0, "case": "p", "messages": [{"role": "user", "content": "x" * 100}]}]))
+        out = tmp_path / "r.json"
+        tfrouter.main(["bench", "--base-url", f"http://127.0.0.1:{srv.server_port}/v1", "--model", "m", "--messages",
+                       str(msgs), "--api-key-file", str(key), "--requests", "2", "--server-log", str(log), "--out", str(out)])
+    finally:
+        srv.shutdown()
+    d = json.loads(out.read_text())
+    assert d["warmup"]["server"]["ttft"] == 0.1
+    assert [r["server"]["ttft"] for r in d["records"]] == [0.5, 0.5]
