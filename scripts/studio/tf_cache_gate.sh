@@ -125,7 +125,11 @@ PY
 fi
 
 need UV STUDIO_HOME STUDIO_ALLOWED_HOSTS || exit 1
-RID=${1:?usage: tf_cache_gate.sh [--prep-only | RUNTIME_ID]}
+RID=${1:?usage: tf_cache_gate.sh [--prep-only | RUNTIME_ID [--from-leg 1|4b|5|6]]}
+FROM_LEG=1
+if [ "${2:-}" = "--from-leg" ]; then
+  FROM_LEG=${3:?--from-leg requires a value (1, 4b, 5, 6)}
+fi
 BIN=$STUDIO_HOME/runtimes/tensorfold/$RID/source/zig-out/native/bin/tensorfold-native
 export TENSORFOLD_LIBTURBOJPEG=$STUDIO_HOME/runtimes/tensorfold/$RID/libjpeg-turbo/lib/libturbojpeg.0.dylib
 PORT=19013
@@ -232,13 +236,15 @@ PY
 
 check_partition() {
   "$UV" run python - "$1" "$2" <<'PY'
-import json, sys
+import json, re, sys
 text = open(sys.argv[1]).read()
 want = int(sys.argv[2])
 obj = None
 for line in text.splitlines():
+    # Zig `{any}` formats slices with `{ ... }` instead of JSON `[ ... ]`.
+    fixed = re.sub(r'"first_cuts":\s*\{([^}]*)\}', r'"first_cuts": [\1]', line)
     try:
-        v = json.loads(line)
+        v = json.loads(fixed)
     except ValueError:
         continue
     if isinstance(v, dict) and "partition" in v:
@@ -254,6 +260,7 @@ print(json.dumps({"partition": obj["partition"], "restores": len(restores)}))
 PY
 }
 
+if [ "$FROM_LEG" = 1 ]; then
 # 1. exact on 48 layers
 must exact "$TF" "$PACK" exact "$L/ids.json" 448
 grep -q '"differ": 0,' "$W/exact.log" || { echo "exact: differ is not 0" >&2; exit 1; }
@@ -277,13 +284,19 @@ must greedy-8k-drafts "$TF" "$PACK" greedy "$LONG" 64 --drafts
 same_tokens "$W/greedy-8k-drafts.log" "$REF_GREEDY_DRAFTS" 64 || { echo "greedy-8k-drafts: differs from reference" >&2; exit 1; }
 echo "wrap identity: pass"
 
-# 4. partition with --restore and --drafts
+# 4a. partition with --restore and --drafts (cut 4095 1)
 must partition-c4095-1 "$TF" "$PACK" partition "$LONG" 4095 1 --restore 1000 --restore 5377 --restore 8000 --drafts
+fi
+
+if [ "$FROM_LEG" = 1 ] || [ "$FROM_LEG" = 4b ]; then
 check_partition "$W/partition-c4095-1.log" 3 || { echo "partition-c4095-1: not identical everywhere" >&2; exit 1; }
+# 4b. partition with --restore and --drafts (cut 2053)
 must partition-tile "$TF" "$PACK" partition "$LONG" 2053 --restore 4096 --drafts
 check_partition "$W/partition-tile.log" 1 || { echo "partition-tile: not identical everywhere" >&2; exit 1; }
 echo "partition restore: pass"
+fi
 
+if [ "$FROM_LEG" = 1 ] || [ "$FROM_LEG" = 4b ] || [ "$FROM_LEG" = 5 ]; then
 # 5. long contexts (32k and 131k needle)
 must greedy-32k-plain "$TF" "$PACK" greedy "$LONG32K" 64
 must greedy-32k-drafts "$TF" "$PACK" greedy "$LONG32K" 64 --drafts
@@ -297,6 +310,7 @@ same_tokens "$W/greedy-131k-plain.log" "$W/greedy-131k-drafts.log" 64 || { echo 
 must needle-131k-contains "$UV" run python -m ink2q.tfchat contains \
   --source "$R/source" --log "$W/greedy-131k-plain.log" --text "$NEEDLE_CODE"
 echo "long contexts: pass"
+fi
 
 # 6. served: cache on against cache off
 read -ra _host_list <<< "$STUDIO_ALLOWED_HOSTS"
