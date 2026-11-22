@@ -85,11 +85,15 @@ from ink2q.tokens import load_manifest, load_tokens
 seqs = load_tokens(Path(sys.argv[1]))
 man = load_manifest(Path(sys.argv[2]))
 assert len(seqs) == len(man), f"sequence/manifest length mismatch: {len(seqs)} != {len(man)}"
-ids = [int(t) for s in seqs for t in s]
+base = [int(t) for s in seqs for t in s]
+assert base, "heldout token list is empty"
+# Tile heldout sequences so 131k needle prompts have enough source tokens while keeping doc8k and doc32k disjoint.
+reps = (160_000 + len(base) - 1) // len(base)
+ids = base * reps
 Path(sys.argv[3]).write_text(json.dumps(ids))
-offset = 16384 if len(ids) > 16384 + 40000 else 0
+offset = 16384
 Path(sys.argv[4]).write_text(json.dumps(ids[offset:]))
-print(json.dumps({"sequences": len(seqs), "tokens": len(ids), "doc32k_offset": offset, "out": sys.argv[3]}))
+print(json.dumps({"sequences": len(seqs), "base_tokens": len(base), "tiled_tokens": len(ids), "doc32k_offset": offset, "out": sys.argv[3]}))
 PY
 
   echo "$(date '+%F %T') == prep: building $NEEDLE131K and $LONG32K"
