@@ -14,6 +14,7 @@ EFFORT_NAME = {0.0: "none", 0.1: "minimal", 0.2: "low", 0.7: "medium", 0.9: "hig
 DEFAULT_EFFORT = 0.9
 _EFFORT_TEXT = re.compile(r"Thinking effort level: (\S+)")
 TOOL_DECLARE = "tool_declare"
+NEEDLE_QUESTION = "What is the access code? Reply with the code only."
 
 
 @dataclass(frozen=True)
@@ -301,6 +302,103 @@ def messages_cmd(a) -> None:
     print(json.dumps({"prompts": len(report), "exact": sum(1 for r in report if r["exact"]), "out": str(a.out)}))
 
 
+def _load_tokenizer(source: Path):
+    from transformers import AutoTokenizer
+    return AutoTokenizer.from_pretrained(str(source))
+
+
+def insert_needle(ids: list[int], needle: list[int], frac: float) -> list[int]:
+    """Insert `needle` into `ids` at fraction `frac` of its length, returning a new list."""
+    if not (0.0 <= frac <= 1.0):
+        raise ValueError(f"frac must be in [0, 1], got {frac}")
+    at = int(len(ids) * frac)
+    return list(ids[:at]) + list(needle) + list(ids[at:])
+
+
+def fit_needle(src, needle_ids: list[int], frac: float, decode: Callable[[list[int]], str], strip: set[int],
+               render: Callable[[Parsed], list[int]], target: int, reasoning_effort: str | float | None = "none"):
+    """(k, parsed, rendered ids) for the cut of raw `src` with `needle_ids` inserted at `frac` and NEEDLE_QUESTION
+    appended whose rendered ids plus the opener are `target` long (or the longest fit below it)."""
+    clean = [int(t) for t in src if int(t) not in strip]
+    k, seen, best = min(max(1, target - len(needle_ids)), len(clean)), set(), None
+    while k >= 1 and k not in seen:
+        seen.add(k)
+        body = decode(insert_needle(clean[:k], needle_ids, frac))
+        if "\ufffd" in body:
+            k -= 1
+            continue
+        p = Parsed([{"role": "user", "content": f"{body}\n\n{NEEDLE_QUESTION}"}], None, reasoning_effort, True)
+        got = render(p)
+        n = len(got) + 1
+        if n == target:
+            return k, p, got
+        if n < target and (best is None or n > best[0]):
+            best = (n, k, p, got)
+        k = min(k + target - n, len(clean))
+    if best is None:
+        raise ValueError(f"no cut of the document renders to {target} ids or fewer")
+    return best[1:]
+
+
+def first_token_list(text: str) -> list[int]:
+    """The first JSON list of ints on its own line in a greedy log."""
+    for line in text.splitlines():
+        try:
+            v = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(v, list) and all(isinstance(x, int) and not isinstance(x, bool) for x in v):
+            return v
+    raise ValueError("no JSON token list in log")
+
+
+def log_contains(log_text: str, decode: Callable[[list[int]], str], needle: str) -> tuple[bool, str, int]:
+    """Decode the first JSON token list in `log_text` and check whether it contains `needle`."""
+    ids = first_token_list(log_text)
+    decoded = decode(ids)
+    return needle in decoded, decoded, len(ids)
+
+
+def needle_cmd(a) -> None:
+    tok = _load_tokenizer(a.source)
+    sp = Specials.from_vocab(tok.get_added_vocab())
+    strip = set(tok.get_added_vocab().values())
+
+    def decode(toks):
+        return tok.decode(toks, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+
+    src = [int(t) for t in json.loads(a.ids.read_text())]
+    sentence = f"\nThe access code is {a.code}.\n"
+    needle_ids = [int(t) for t in tok(sentence, add_special_tokens=False)["input_ids"]]
+    effort = None if a.reasoning_effort == "default" else a.reasoning_effort
+    k, _p, got = fit_needle(src, needle_ids, a.at, decode, strip,
+                            lambda q: render_ids(tok, q.messages, q.tools, q.reasoning_effort),
+                            a.target, reasoning_effort=effort)
+    ids = got + [sp.model]
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    a.out.write_text(json.dumps(ids))
+    print(json.dumps({"target": a.target, "ids_length": len(ids), "cut_tokens": k, "at": a.at, "code": a.code,
+                      "out": str(a.out)}))
+    if len(ids) != a.target:
+        raise SystemExit(1)
+
+
+def contains_cmd(a) -> None:
+    tok = _load_tokenizer(a.source)
+
+    def decode(toks):
+        return tok.decode(toks, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+
+    try:
+        found, decoded, n = log_contains(a.log.read_text(), decode, a.text)
+    except ValueError as e:
+        print(json.dumps({"found": False, "text": a.text, "error": str(e)}))
+        raise SystemExit(1)
+    print(json.dumps({"found": found, "text": a.text, "tokens": n, "decoded": decoded}))
+    if not found:
+        raise SystemExit(1)
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -320,6 +418,21 @@ def main(argv=None) -> None:
     d.add_argument("--out-dir", type=Path, required=True,
                    help="gets prefill-messages.json, prefill-report.json and prefill-ids/ (seq-NNNNN.json, index.txt)")
     d.set_defaults(fn=documents_cmd)
+    n = sub.add_parser("needle", help="raw ids cut with an access-code needle inserted at --at -> exact --target prompt ids")
+    n.add_argument("--source", type=Path, required=True, help="source model dir with the tokenizer and chat template")
+    n.add_argument("--ids", type=Path, required=True, help="JSON list of raw token ids")
+    n.add_argument("--target", type=int, required=True, help="rendered prompt length including the trailing opener")
+    n.add_argument("--code", required=True, help="access code text placed in the needle sentence")
+    n.add_argument("--at", type=float, default=0.5, help="fractional position of the needle in the document [0, 1]")
+    n.add_argument("--reasoning-effort", default="none",
+                   help="reasoning effort for the rendered prompt ('default' for template default)")
+    n.add_argument("--out", type=Path, required=True)
+    n.set_defaults(fn=needle_cmd)
+    c = sub.add_parser("contains", help="decode the first JSON token list in a greedy log; exit 0 if it contains --text")
+    c.add_argument("--source", type=Path, required=True, help="source model dir with the tokenizer")
+    c.add_argument("--log", type=Path, required=True, help="greedy run log containing a JSON token list line")
+    c.add_argument("--text", required=True, help="substring expected in the decoded tokens")
+    c.set_defaults(fn=contains_cmd)
     a = ap.parse_args(argv)
     a.fn(a)
 
